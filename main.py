@@ -19,24 +19,22 @@ dp.include_router(catalog_router)
 dp.include_router(cart_router)
 dp.include_router(order_router)
 
-# FastAPI для вебхука (можно убрать если polling)
+# FastAPI для вебхука (можно удалить если только polling)
 app = FastAPI()
 
 @app.on_event("startup")
 async def startup():
     await bot.set_my_commands([
-        BotCommand(command="start", description="Запуск бота")
+        BotCommand(command="start", description="Запуск бота"),
+        BotCommand(command="catalog", description="Каталог"),
+        BotCommand(command="cart", description="Корзина")
     ])
     print("Bot started.")
 
-@app.post("/webhook")
-async def webhook(req):
-    await dp.feed_webhook_update(bot, await req.json())
-    return {"ok": True}
 
-# ПУЛЛИНГ (локально)
+# ПУЛЛИНГ локально
 if __name__ == "__main__":
-    async def run_polling():
+    async def run():
         await dp.start_polling(bot)
 
-    asyncio.run(run_polling())
+    asyncio.run(run())
