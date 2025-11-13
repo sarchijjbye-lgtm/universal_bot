@@ -20,7 +20,7 @@ dp.include_router(order_router)
 
 # URL вебхука (Render задаёт domain)
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = "{your_render_domain}" + WEBHOOK_PATH  # обновим после деплоя
+WEBHOOK_URL = "https://universal-bot-eb3x.onrender.com/webhook" # обновим после деплоя
 
 app = FastAPI()
 
