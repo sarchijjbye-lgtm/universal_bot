@@ -8,12 +8,12 @@ def connect():
     scope = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
-        "https://www.googleapis.com/auth/drive.file"
+        "https://www.googleapis.com/auth/drive.file",
     ]
+
     service_account_info = json.loads(GOOGLE_SA_JSON)
     creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, scope)
-    client = gspread.authorize(creds)
-    return client
+    return gspread.authorize(creds)
 
 
 def load_products():
@@ -28,7 +28,7 @@ def load_products():
         if r.get("variants"):
             try:
                 variants = json.loads(r["variants"])
-            except:
+            except Exception:
                 variants = []
 
         products.append({
