@@ -3,12 +3,14 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from utils.sheets import load_products
 
 catalog_router = Router()
+
+# Загружаем товары из Google Sheets один раз при импорте модуля
 PRODUCTS = load_products()
 
 
 @catalog_router.message(lambda m: m.text == "🛍 Каталог")
 async def open_catalog(message: types.Message):
-    categories = sorted(list({p["category"] for p in PRODUCTS}))
+    categories = sorted({p["category"] for p in PRODUCTS})
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -23,7 +25,6 @@ async def open_catalog(message: types.Message):
 @catalog_router.callback_query(lambda c: c.data.startswith("cat_"))
 async def show_category(callback: types.CallbackQuery):
     cat = callback.data[4:]
-
     items = [p for p in PRODUCTS if p["category"] == cat]
 
     kb = InlineKeyboardMarkup(
@@ -63,5 +64,6 @@ async def show_item(callback: types.CallbackQuery):
         ])
 
     kb = InlineKeyboardMarkup(inline_keyboard=ikb)
+
     await callback.message.answer(text, reply_markup=kb)
     await callback.answer()
