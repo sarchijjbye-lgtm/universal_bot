@@ -1,66 +1,67 @@
 from aiogram import Router, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import Command
 from utils.sheets import load_products
 
 catalog_router = Router()
 PRODUCTS = load_products()
 
-@catalog_router.message(Command("catalog"))
-async def show_categories(message: types.Message):
-    categories = list(set(p["category"] for p in PRODUCTS))
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=c, callback_data=f"cat_{c}")]
-        for c in categories
-    ])
+
+@catalog_router.message(lambda m: m.text == "🛍 Каталог")
+async def open_catalog(message: types.Message):
+    categories = sorted(list({p["category"] for p in PRODUCTS}))
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=c, callback_data=f"cat_{c}")]
+            for c in categories
+        ]
+    )
+
     await message.answer("Выберите категорию:", reply_markup=kb)
 
 
 @catalog_router.callback_query(lambda c: c.data.startswith("cat_"))
-async def show_products(callback: types.CallbackQuery):
-    cat = callback.data.replace("cat_", "")
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
+async def show_category(callback: types.CallbackQuery):
+    cat = callback.data[4:]
 
-    for p in PRODUCTS:
-        if p["category"] == cat:
-            kb.inline_keyboard.append([
-                InlineKeyboardButton(p["name"], callback_data=f"product_{p['id']}")
-            ])
+    items = [p for p in PRODUCTS if p["category"] == cat]
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=p["name"], callback_data=f"item_{p['id']}")]
+            for p in items
+        ]
+    )
 
     await callback.message.answer(f"Категория: {cat}", reply_markup=kb)
+    await callback.answer()
 
 
-@catalog_router.callback_query(lambda c: c.data.startswith("product_"))
-async def product_card(callback: types.CallbackQuery):
-    pid = callback.data.split("_")[1]
-    p = next((x for x in PRODUCTS if x["id"] == pid), None)
+@catalog_router.callback_query(lambda c: c.data.startswith("item_"))
+async def show_item(callback: types.CallbackQuery):
+    item_id = callback.data[5:]
+    product = next(x for x in PRODUCTS if x["id"] == item_id)
 
-    caption = f"<b>{p['name']}</b>\n\n{p['description']}"
+    text = f"📦 {product['name']}\n\n{product['description']}"
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    ikb = []
 
-    if p["variants"]:
-        caption += "\n\n<b>Выберите вариант:</b>"
-
-        for v in p["variants"]:
-            kb.inline_keyboard.append([
+    if product["variants"]:
+        for v in product["variants"]:
+            ikb.append([
                 InlineKeyboardButton(
-                    text=f"{v['label']} — {v['price']} ₽",
-                    callback_data=f"addvar_{p['id']}_{v['id']}"
+                    text=f"{v['name']} — {v['price']} ₽",
+                    callback_data=f"add_{product['id']}_{v['name']}"
                 )
             ])
     else:
-        caption += f"\n\nЦена: {p['base_price']} ₽"
-        kb.inline_keyboard.append([
+        ikb.append([
             InlineKeyboardButton(
-                text="Добавить в корзину",
-                callback_data=f"addbase_{p['id']}"
+                text=f"Добавить — {product['base_price']} ₽",
+                callback_data=f"add_{product['id']}_base"
             )
         ])
 
-    await callback.message.answer_photo(
-        photo=p["photo"],
-        caption=caption,
-        parse_mode="HTML",
-        reply_markup=kb
-    )
+    kb = InlineKeyboardMarkup(inline_keyboard=ikb)
+    await callback.message.answer(text, reply_markup=kb)
+    await callback.answer()
