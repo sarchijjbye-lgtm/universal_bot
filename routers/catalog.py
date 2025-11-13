@@ -1,86 +1,64 @@
 from aiogram import Router, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from routers.catalog import PRODUCTS
+from utils.sheets import load_products
 
-cart_router = Router()
-user_carts = {}  # user_id: [items]
+catalog_router = Router()
+PRODUCTS = load_products()
 
-def find_product(pid):
-    return next((p for p in PRODUCTS if p["id"] == pid), None)
+@catalog_router.message(commands=['catalog'])
+async def show_categories(message: types.Message):
+    cats = list(set(p["category"] for p in PRODUCTS))
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=c, callback_data=f"cat_{c}")]
+        for c in cats
+    ])
+    await message.answer("Выберите категорию:", reply_markup=kb)
 
-@cart_router.callback_query(lambda c: c.data.startswith("addvar_") or c.data.startswith("addbase_"))
-async def add_to_cart(callback: types.CallbackQuery):
-    parts = callback.data.split("_")
-    mode = parts[0]
-    pid = parts[1]
-    p = find_product(pid)
-    uid = callback.from_user.id
+@catalog_router.callback_query(lambda c: c.data.startswith("cat_"))
+async def show_products(callback: types.CallbackQuery):
+    cat = callback.data.split("_",1)[1]
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    for p in PRODUCTS:
+        if p["category"] == cat:
+            kb.inline_keyboard.append([
+                InlineKeyboardButton(
+                    text=p["name"], callback_data=f"product_{p['id']}"
+                )
+            ])
+    await callback.message.answer(f"Товары категории {cat}:", reply_markup=kb)
 
-    if mode == "addvar":
-        var_id = parts[2]
-        v = next((x for x in p["variants"] if str(x["id"]) == var_id), None)
-        price = v["price"]
-        label = v["label"]
-    else:
-        price = p["base_price"]
-        label = None
+@catalog_router.callback_query(lambda c: c.data.startswith("product_"))
+async def product_card(callback: types.CallbackQuery):
+    pid = callback.data.split("_")[1]
+    p = next((x for x in PRODUCTS if x["id"] == pid), None)
+    if not p:
+        return await callback.answer("Товар не найден")
 
-    user_carts.setdefault(uid, []).append({
-        "product_id": pid,
-        "name": p["name"],
-        "variant_label": label,
-        "price": price,
-        "qty": 1
-    })
+    caption = f"<b>{p['name']}</b>\n\n{p['description']}"
 
-    await callback.answer("Добавлено!")
-
-@cart_router.message(commands=['cart'])
-async def show_cart(message: types.Message):
-    uid = message.from_user.id
-    cart = user_carts.get(uid, [])
-
-    if not cart:
-        return await message.answer("Корзина пуста")
-
-    total = 0
-    txt = "🛒 <b>Корзина</b>\n\n"
     kb = InlineKeyboardMarkup(inline_keyboard=[])
 
-    for i, item in enumerate(cart):
-        line_total = item["price"] * item["qty"]
-        total += line_total
-        title = item["name"]
-        if item["variant_label"]:
-            title += f" ({item['variant_label']})"
-
-        txt += f"{i+1}. {title} — {item['price']} ₽ x {item['qty']} = {line_total} ₽\n"
+    if p["variants"]:
+        caption += "\n\n<b>Выберите вариант:</b>"
+        for v in p["variants"]:
+            kb.inline_keyboard.append([
+                InlineKeyboardButton(
+                    text=f"{v['label']} — {v['price']} ₽",
+                    callback_data=f"addvar_{p['id']}_{v['id']}"
+                )
+            ])
+    else:
+        caption += f"\n\nЦена: {p['base_price']} ₽"
         kb.inline_keyboard.append([
-            InlineKeyboardButton(text=f"Удалить {i+1}", callback_data=f"del_{i}")
+            InlineKeyboardButton(
+                text="Добавить в корзину",
+                callback_data=f"addbase_{p['id']}"
+            )
         ])
 
-    txt += f"\n<b>Итого:</b> {total} ₽"
-
-    kb.inline_keyboard.append([
-        InlineKeyboardButton(text="Очистить корзину", callback_data="clear_cart")
-    ])
-    kb.inline_keyboard.append([
-        InlineKeyboardButton(text="Оформить заказ", callback_data="make_order")
-    ])
-
-    await message.answer(txt, parse_mode="HTML", reply_markup=kb)
-
-@cart_router.callback_query(lambda c: c.data.startswith("del_"))
-async def delete_item(callback: types.CallbackQuery):
-    uid = callback.from_user.id
-    idx = int(callback.data.split("_")[1])
-    if uid in user_carts and 0 <= idx < len(user_carts[uid]):
-        user_carts[uid].pop(idx)
-    await callback.answer("Удалено!")
-    await show_cart(callback.message)
-
-@cart_router.callback_query(lambda c: c.data == "clear_cart")
-async def clear_cart(callback: types.CallbackQuery):
-    user_carts[callback.from_user.id] = []
-    await callback.answer("Корзина очищена!")
-    await callback.message.answer("Корзина пуста.")
+    await callback.message.answer_photo(
+        photo=p["photo"],
+        caption=caption,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
