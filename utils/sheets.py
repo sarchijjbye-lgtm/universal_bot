@@ -1,10 +1,15 @@
 import gspread
 import json
 from oauth2client.service_account import ServiceAccountCredentials
-from config import GOOGLE_SA_JSON, SPREADSHEET_NAME
+from config import GOOGLE_SA_JSON, PRODUCTS_SHEET_NAME, SPREADSHEET_NAME
+
 
 def connect():
-    scope = ["https://www.googleapis.com/auth/spreadsheets"]
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/drive.file"
+    ]
     service_account_info = json.loads(GOOGLE_SA_JSON)
     creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, scope)
     client = gspread.authorize(creds)
@@ -13,7 +18,7 @@ def connect():
 
 def load_products():
     client = connect()
-    sheet = client.open("Products").sheet1
+    sheet = client.open(PRODUCTS_SHEET_NAME).sheet1
     rows = sheet.get_all_records()
 
     products = []
