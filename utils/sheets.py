@@ -5,11 +5,9 @@ from config import GOOGLE_SA_JSON, SPREADSHEET_NAME
 
 
 def connect():
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_SA_JSON, scope)
+    scope = ["https://www.googleapis.com/auth/spreadsheets"]
+    service_account_info = json.loads(GOOGLE_SA_JSON)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, scope)
     client = gspread.authorize(creds)
     return client
 
