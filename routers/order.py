@@ -8,21 +8,25 @@ from main import bot
 
 order_router = Router()
 
+
 class OrderForm(StatesGroup):
     name = State()
     phone = State()
     address = State()
 
+
 @order_router.callback_query(F.data == "make_order")
-async def start_order(callback: types.CallbackQuery, state: FSMContext):
+async def ask_name(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("Введите имя:")
     await state.set_state(OrderForm.name)
+
 
 @order_router.message(OrderForm.name)
 async def ask_phone(message: types.Message, state: FSMContext):
     await state.update_data(name=message.text)
-    await message.answer("Введите телефон:")
+    await message.answer("Введите номер телефона:")
     await state.set_state(OrderForm.phone)
+
 
 @order_router.message(OrderForm.phone)
 async def ask_address(message: types.Message, state: FSMContext):
@@ -30,17 +34,17 @@ async def ask_address(message: types.Message, state: FSMContext):
     await message.answer("Введите адрес доставки:")
     await state.set_state(OrderForm.address)
 
+
 @order_router.message(OrderForm.address)
-async def finish_order(message: types.Message, state: FSMContext):
-    data = await state.get_data()
+async def finalize(message: types.Message, state: FSMContext):
     uid = message.from_user.id
+    data = await state.get_data()
     cart = user_carts.get(uid, [])
 
-    items_str = "; ".join([
-        f"{i['name']}" + (f" ({i['variant_label']})" if i['variant_label'] else "")
-        + f" x{i['qty']} [{i['price']}]"
+    items_str = "; ".join(
+        f"{i['name']}{' (' + i['variant_label'] + ')' if i['variant_label'] else ''} x{i['qty']} [{i['price']}]"
         for i in cart
-    ])
+    )
 
     total = sum(i["price"] * i["qty"] for i in cart)
 
@@ -56,7 +60,7 @@ async def finish_order(message: types.Message, state: FSMContext):
     add_order(order)
     user_carts[uid] = []
 
-    await message.answer("✅ Заказ оформлен! С вами свяжется оператор.")
+    await message.answer("✅ Заказ оформлен!")
 
     await bot.send_message(
         ADMIN_CHAT_ID,
