@@ -1,8 +1,6 @@
 import asyncio
-from fastapi import FastAPI
-from aiogram import Bot
+from fastapi import FastAPI, Request
 from aiogram.types import Update
-from fastapi import Request
 
 from bot_init import bot, dp
 from routers.start import start_router
@@ -14,23 +12,23 @@ from config import WEBHOOK_URL
 app = FastAPI()
 
 
-# === Подключение роутеров ===
-app.include_router(start_router)
-app.include_router(catalog_router)
-app.include_router(cart_router)
-app.include_router(order_router)
+# === Подключаем Aiogram-роутеры к Dispatcher (НЕ к FastAPI!) ===
+dp.include_router(start_router)
+dp.include_router(catalog_router)
+dp.include_router(cart_router)
+dp.include_router(order_router)
 
 
 # === Обработка Telegram webhook ===
 @app.post("/webhook")
-async def telegram_webhook(req: Request):
-    data = await req.json()
+async def telegram_webhook(request: Request):
+    data = await request.json()
     update = Update(**data)
     await dp.process_update(update)
     return "ok"
 
 
-# === Установка вебхука ===
+# === Установка вебхука при старте сервиса ===
 @app.on_event("startup")
 async def on_startup():
     await bot.set_webhook(WEBHOOK_URL)
