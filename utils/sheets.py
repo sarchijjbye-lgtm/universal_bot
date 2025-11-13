@@ -3,16 +3,12 @@ import json
 from oauth2client.service_account import ServiceAccountCredentials
 from config import GOOGLE_SA_JSON, SPREADSHEET_NAME
 
-
 def connect():
-    scope = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-
+    scope = ["https://www.googleapis.com/auth/spreadsheets"]
     service_account_info = json.loads(GOOGLE_SA_JSON)
     creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, scope)
-    return gspread.authorize(creds)
+    client = gspread.authorize(creds)
+    return client
 
 
 def load_products():
@@ -44,15 +40,14 @@ def load_products():
     return [p for p in products if p["active"]]
 
 
-def add_order(data):
+def add_order(order):
     client = connect()
     sheet = client.open(SPREADSHEET_NAME).sheet1
-
     sheet.append_row([
-        data["tg_id"],
-        data["name"],
-        data["phone"],
-        data["address"],
-        data["items"],
-        data["total"]
+        order["tg_id"],
+        order["name"],
+        order["phone"],
+        order["address"],
+        order["items"],
+        order["total"]
     ])
