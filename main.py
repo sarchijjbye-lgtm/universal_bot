@@ -1,34 +1,36 @@
-import asyncio
 from fastapi import FastAPI, Request
 from aiogram.types import Update
 
 from bot_init import bot, dp
-from routers.start import start_router
-from routers.catalog import catalog_router
-from routers.cart import cart_router
-from routers.order import order_router
-from config import WEBHOOK_URL
+from config import WEBHOOK_URL, WEBHOOK_PATH
 
-
+# ===== CREATE FASTAPI APP =====
 app = FastAPI()
 
-# === ROUTERS ===
-app.include_router(start_router)
-app.include_router(catalog_router)
-app.include_router(cart_router)
-app.include_router(order_router)
 
-
-# === Webhook receiver ===
-@app.post("/webhook")
+# ===== TELEGRAM WEBHOOK HANDLER =====
+@app.post(WEBHOOK_PATH)
 async def telegram_webhook(req: Request):
     data = await req.json()
     update = Update(**data)
+
+    # Обрабатываем update
     await dp.feed_update(bot, update)
-    return "ok"
+
+    return {"ok": True}
 
 
-# === Startup event ===
+# ===== ROOT CHECK =====
+@app.get("/")
+def root():
+    return {"status": "running", "webhook": WEBHOOK_URL}
+
+
+# ===== STARTUP: SET WEBHOOK =====
 @app.on_event("startup")
 async def on_startup():
-    await bot.set_webhook(WEBHOOK_URL)
+    try:
+        await bot.set_webhook(WEBHOOK_URL)
+        print(f"[WEBHOOK] Set to {WEBHOOK_URL}")
+    except Exception as e:
+        print(f"[WEBHOOK ERROR] {e}")
