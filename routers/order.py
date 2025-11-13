@@ -1,75 +1,70 @@
-from aiogram import Router, types, F
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
-from config import ADMIN_CHAT_ID
+from aiogram import Router, types
+from bot_init import bot
 from utils.sheets import add_order
-from routers.cart import user_carts
-from main import bot
+from config import ADMIN_CHAT_ID
+from routers.cart import CART, get_total
 
 order_router = Router()
 
-
-class OrderForm(StatesGroup):
-    name = State()
-    phone = State()
-    address = State()
+USER_STATE = {}   # {id: "name"/"phone"/"address"}
+ORDER_DATA = {}   # временное хранилище
 
 
-@order_router.callback_query(F.data == "make_order")
-async def ask_name(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("Введите имя:")
-    await state.set_state(OrderForm.name)
+@order_router.callback_query(lambda c: c.data == "checkout")
+async def checkout(callback: types.CallbackQuery):
+    ORDER_DATA[callback.from_user.id] = {}
+
+    USER_STATE[callback.from_user.id] = "name"
+    await callback.message.answer("Введите ваше имя:")
+    await callback.answer()
 
 
-@order_router.message(OrderForm.name)
-async def ask_phone(message: types.Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await message.answer("Введите номер телефона:")
-    await state.set_state(OrderForm.phone)
-
-
-@order_router.message(OrderForm.phone)
-async def ask_address(message: types.Message, state: FSMContext):
-    await state.update_data(phone=message.text)
-    await message.answer("Введите адрес доставки:")
-    await state.set_state(OrderForm.address)
-
-
-@order_router.message(OrderForm.address)
-async def finalize(message: types.Message, state: FSMContext):
+@order_router.message()
+async def order_flow(message: types.Message):
     uid = message.from_user.id
-    data = await state.get_data()
-    cart = user_carts.get(uid, [])
 
-    items_str = "; ".join(
-        f"{i['name']}{' (' + i['variant_label'] + ')' if i['variant_label'] else ''} x{i['qty']} [{i['price']}]"
-        for i in cart
-    )
+    if uid not in USER_STATE:
+        return
 
-    total = sum(i["price"] * i["qty"] for i in cart)
+    state = USER_STATE[uid]
 
-    order = {
-        "tg_id": str(uid),
-        "name": data["name"],
-        "phone": data["phone"],
-        "address": message.text,
-        "items": items_str,
-        "total": total
-    }
+    if state == "name":
+        ORDER_DATA[uid]["name"] = message.text
+        USER_STATE[uid] = "phone"
+        await message.answer("Введите номер телефона:")
+        return
 
-    add_order(order)
-    user_carts[uid] = []
+    if state == "phone":
+        ORDER_DATA[uid]["phone"] = message.text
+        USER_STATE[uid] = "address"
+        await message.answer("Введите адрес доставки:")
+        return
 
-    await message.answer("✅ Заказ оформлен!")
+    if state == "address":
+        ORDER_DATA[uid]["address"] = message.text
 
-    await bot.send_message(
-        ADMIN_CHAT_ID,
-        f"📦 Новый заказ\n\n"
-        f"Имя: {order['name']}\n"
-        f"Телефон: {order['phone']}\n"
-        f"Адрес: {order['address']}\n\n"
-        f"Товары: {order['items']}\n"
-        f"Сумма: {order['total']} ₽"
-    )
+        cart = CART.get(uid, [])
+        total = get_total(cart)
 
-    await state.clear()
+        items_str = "\n".join(
+            f"{i+1}. {x['name']} ({x['variant']}) — {x['price']} ₽"
+            for i, x in enumerate(cart)
+        )
+
+        order = {
+            "tg_id": uid,
+            "name": ORDER_DATA[uid]["name"],
+            "phone": ORDER_DATA[uid]["phone"],
+            "address": ORDER_DATA[uid]["address"],
+            "items": items_str,
+            "total": total
+        }
+
+        add_order(order)
+
+        await message.answer("Заказ оформлен! 🚀")
+        await bot.send_message(ADMIN_CHAT_ID, f"Новый заказ:\n\n{items_str}\n\nИтого: {total} ₽")
+
+        CART[uid] = []
+        USER_STATE.pop(uid)
+        ORDER_DATA.pop(uid)
