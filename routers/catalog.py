@@ -5,7 +5,7 @@ from utils.sheets import load_products
 
 catalog_router = Router()
 
-# — КЭШ ТОВАРОВ —
+# КЕШ ПРОДУКТОВ
 PRODUCTS_CACHE = None
 
 
@@ -14,15 +14,23 @@ def get_products():
     if PRODUCTS_CACHE is None:
         print("[CATALOG] Loading products from Google Sheets...")
         PRODUCTS_CACHE = load_products()
+
+        # --- FIX: гарантируем правильный формат variants ---
+        for p in PRODUCTS_CACHE:
+            if isinstance(p.get("variants"), list):
+                for v in p["variants"]:
+                    if "name" not in v and "label" in v:
+                        v["name"] = v["label"]  # исправляем
+                        del v["label"]
         print(f"[CATALOG] Loaded {len(PRODUCTS_CACHE)} items")
+
     return PRODUCTS_CACHE
 
 
-# === Открыть каталог ===
 @catalog_router.message(lambda m: m.text == "🛍 Каталог")
 async def open_catalog(message: types.Message):
     products = get_products()
-    categories = sorted({p["category"] for p in products})
+    categories = sorted(list({p["category"] for p in products}))
 
     if not categories:
         await message.answer("Каталог пока пуст 😔")
@@ -30,25 +38,20 @@ async def open_catalog(message: types.Message):
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=name, callback_data=f"cat_{name}")]
-            for name in categories
+            [InlineKeyboardButton(text=c, callback_data=f"cat_{c}")]
+            for c in categories
         ]
     )
+
     await message.answer("Выберите категорию:", reply_markup=kb)
 
 
-# === Показать товары категории ===
 @catalog_router.callback_query(lambda c: c.data.startswith("cat_"))
 async def show_category(callback: types.CallbackQuery):
     products = get_products()
     cat = callback.data[4:]
 
     items = [p for p in products if p["category"] == cat]
-
-    if not items:
-        await callback.message.answer("В этой категории товаров пока нет.")
-        await callback.answer()
-        return
 
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -61,31 +64,32 @@ async def show_category(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# === Показать товар ===
 @catalog_router.callback_query(lambda c: c.data.startswith("item_"))
 async def show_item(callback: types.CallbackQuery):
     products = get_products()
     item_id = callback.data[5:]
 
-    product = next((x for x in products if str(x["id"]) == item_id), None)
+    product = next((x for x in products if x["id"] == item_id), None)
 
     if not product:
         await callback.message.answer("Ошибка: товар не найден 😔")
-        await callback.answer()
         return
 
-    # Основной текст
+    # --- текст карточки ---
     text = f"📦 <b>{product['name']}</b>\n\n{product['description']}"
 
-    # Собираем клавиатуру
+    # --- фото (если нет — ставим плейсхолдер) ---
+    photo_url = product.get("photo_url") or "https://via.placeholder.com/600x400?text=No+Image"
+
+    # --- кнопки вариантов ---
     ikb = []
 
-    if product["variants"]:
+    if product.get("variants"):
         for v in product["variants"]:
             ikb.append([
                 InlineKeyboardButton(
-                    text=f"{v['label']} — {v['price']} ₽",
-                    callback_data=f"add_{product['id']}_{v['id']}"
+                    text=f"{v['name']} — {v['price']} ₽",
+                    callback_data=f"add_{product['id']}_{v['name']}"
                 )
             ])
     else:
@@ -98,5 +102,12 @@ async def show_item(callback: types.CallbackQuery):
 
     kb = InlineKeyboardMarkup(inline_keyboard=ikb)
 
-    await callback.message.answer(text, reply_markup=kb)
+    # --- отправляем фото + карточку товара ---
+    await callback.message.answer_photo(
+        photo=photo_url,
+        caption=text,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
     await callback.answer()
