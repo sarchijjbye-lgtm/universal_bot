@@ -1,71 +1,113 @@
-# routers/catalog.py
-
-from aiogram import Router
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram import Router, types
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from google_sheets import load_products_safe
 from settings import get_setting
 
 catalog_router = Router()
 
-PRODUCT_CACHE = None
-
-def load_catalog():
-    global PRODUCT_CACHE
-    if PRODUCT_CACHE is None:
-        PRODUCT_CACHE = load_products_safe()
-    return PRODUCT_CACHE
+# ===== КЭШ ПРОДУКТОВ =====
+PRODUCTS_CACHE = []
 
 
-@catalog_router.message(lambda m: m.text == "🛍 Каталог")
-async def open_catalog(msg: Message):
-    products = load_catalog()
+async def load_products_cached():
+    global PRODUCTS_CACHE
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=prod["name"], callback_data=f"product:{prod['id']}")]
-            for prod in products
-        ]
-    )
+    if not PRODUCTS_CACHE:
+        PRODUCTS_CACHE = await load_products_safe()
 
-    await msg.answer(
-        f"🛍 <b>{get_setting('shop_name')}</b>\nВыберите товар:",
-        reply_markup=kb
-    )
+    return PRODUCTS_CACHE
 
 
-@catalog_router.callback_query(lambda c: c.data.startswith("product:"))
-async def show_product(callback: CallbackQuery):
-    product_id = callback.data.split(":")[1]
-    products = load_catalog()
+# ===== /catalog (кнопка) =====
+@catalog_router.message(lambda m: m.text == "🛍️ Каталог")
+async def show_catalog(message: types.Message):
+    products = await load_products_cached()
 
-    prod = next((p for p in products if str(p["id"]) == str(product_id)), None)
+    # Получаем уникальные категории
+    categories = sorted({p["category"] for p in products})
 
-    if not prod:
-        return await callback.answer("❌ Товар не найден")
+    kb = InlineKeyboardBuilder()
+    for c in categories:
+        kb.button(text=c, callback_data=f"cat:{c}")
+    kb.adjust(1)
 
-    # варианты
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(
-                text=f"{v['label']} — {v['price']}₽",
-                callback_data=f"addcart:{prod['id']}:{v['id']}"
-            )]
-            for v in prod["variants"]
-        ]
-    )
+    await message.answer("Выберите категорию:", reply_markup=kb.as_markup())
 
-    text = f"""
-<b>{prod['name']}</b>
 
-{prod['description']}
+# ===== Выбор категории =====
+@catalog_router.callback_query(lambda c: c.data.startswith("cat:"))
+async def show_category(callback: types.CallbackQuery):
+    _, category = callback.data.split(":", 1)
 
-Выберите объём:
-"""
+    products = await load_products_cached()
+    items = [p for p in products if p["category"] == category]
 
-    await callback.message.answer_photo(
-        photo=prod["photo_file_id"],
-        caption=text,
-        reply_markup=kb
+    kb = InlineKeyboardBuilder()
+    for p in items:
+        kb.button(text=p["name"], callback_data=f"prod:{p['id']}")
+    kb.adjust(1)
+
+    await callback.message.edit_text(
+        f"Категория: <b>{category}</b>\nВыберите товар:",
+        reply_markup=kb.as_markup()
     )
     await callback.answer()
+
+
+# ===== Открыть карточку товара =====
+@catalog_router.callback_query(lambda c: c.data.startswith("prod:"))
+async def product_card(callback: types.CallbackQuery):
+    _, product_id = callback.data.split(":", 1)
+
+    products = await load_products_cached()
+    p = next((x for x in products if str(x["id"]) == product_id), None)
+
+    if not p:
+        return await callback.answer("Ошибка: товар не найден", show_alert=True)
+
+    caption = f"<b>{p['name']}</b>\n\n{p['description']}"
+
+    # ===== Если есть file_id (кеш Telegram) =====
+    if p.get("file_id"):
+        await callback.message.answer_photo(
+            p["file_id"],
+            caption=caption,
+            reply_markup=_variants_keyboard(p)
+        )
+    # ===== Если фото — URL =====
+    elif p.get("photo_url") and p["photo_url"].startswith("http"):
+        msg = await callback.message.answer_photo(
+            p["photo_url"],
+            caption=caption,
+            reply_markup=_variants_keyboard(p)
+        )
+        # сохраняем file_id для ускорения
+        try:
+            file_id = msg.photo[-1].file_id
+            p["file_id"] = file_id
+        except:
+            pass
+
+    # ===== Если фото нет =====
+    else:
+        await callback.message.answer(
+            caption,
+            reply_markup=_variants_keyboard(p)
+        )
+
+    await callback.answer()
+
+
+# ===== Генератор клавиатуры вариантов =====
+def _variants_keyboard(product):
+    kb = InlineKeyboardBuilder()
+    for v in product["variants"]:
+        kb.button(
+            text=v["label"],
+            callback_data=f"addcart:{product['id']}:{v['id']}"
+        )
+
+    kb.adjust(1)
+    return kb.as_markup()
+
