@@ -3,7 +3,7 @@
 from aiogram import Router
 from aiogram.types import CallbackQuery, Message, KeyboardButton, ReplyKeyboardMarkup
 
-from cart import get_cart, calc_total
+from routers.cart import get_cart, calc_total
 from settings import get_setting
 
 order_router = Router()
