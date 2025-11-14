@@ -1,141 +1,60 @@
-# cart.py — PRO EDITION
+# routers/cart.py
 
-from aiogram import Router, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from caching import cache_get, cache_set
-from google_sheets import load_products_safe
+from aiogram import Router
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+
+CART = {}
+
+def get_cart(uid):
+    return CART.get(uid, [])
+
+def calc_total(uid):
+    return sum(item["price"] * item["qty"] for item in get_cart(uid))
 
 cart_router = Router()
 
 
-async def get_cart(user_id):
-    cart = await cache_get(f"cart:{user_id}")
-    if cart:
-        import json
-        return json.loads(cart)
-    return []
+@cart_router.callback_query(lambda c: c.data.startswith("addcart:"))
+async def add_to_cart(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    _, pid, vid = callback.data.split(":")
 
+    if user_id not in CART:
+        CART[user_id] = []
 
-async def save_cart(user_id, cart):
-    import json
-    await cache_set(f"cart:{user_id}", json.dumps(cart), ttl=3600)
+    # достаём товар из глобального кеша
+    from routers.catalog import PRODUCT_CACHE
+    prod = next(p for p in PRODUCT_CACHE if str(p["id"]) == pid)
+    var = next(v for v in prod["variants"] if str(v["id"]) == vid)
 
+    CART[user_id].append({
+        "name": prod["name"],
+        "variant": var["label"],
+        "price": var["price"],
+        "qty": 1
+    })
 
-async def get_products():
-    data = await cache_get("products")
-    if data:
-        import json
-        return json.loads(data)
-    return load_products_safe()
+    await callback.answer("✔ Добавлено в корзину!", show_alert=False)
 
-
-def calc_total(cart):
-    return sum(item["price"] * item["qty"] for item in cart)
-
-
-# ====== ADD ITEM ======
-
-@cart_router.callback_query(lambda c: c.data.startswith("add_"))
-async def add_item(cb: types.CallbackQuery):
-    _, pid, vid = cb.data.split("_")
-    products = await get_products()
-
-    product = next((p for p in products if p["id"] == pid), None)
-    if not product:
-        await cb.answer("Ошибка товара", show_alert=True)
-        return
-
-    variant = next((v for v in product["variants"] if v["id"] == vid), None)
-    if not variant:
-        await cb.answer("Ошибка варианта", show_alert=True)
-        return
-
-    cart = await get_cart(cb.from_user.id)
-
-    # check existing
-    key = f"{pid}:{vid}"
-    found = next((x for x in cart if x["key"] == key), None)
-    if found:
-        found["qty"] += 1
-    else:
-        cart.append({
-            "key": key,
-            "product": product["name"],
-            "variant": variant["name"],
-            "price": variant["price"],
-            "qty": 1
-        })
-
-    await save_cart(cb.from_user.id, cart)
-    await cb.answer("Добавлено в корзину!")
-
-
-# ====== SHOW CART ======
 
 @cart_router.message(lambda m: m.text == "🛒 Корзина")
-async def show_cart(message: types.Message):
-    cart = await get_cart(message.from_user.id)
+async def show_cart(msg: Message):
 
+    cart = get_cart(msg.from_user.id)
     if not cart:
-        await message.answer("Корзина пуста.")
-        return
+        return await msg.answer("🛒 Корзина пуста")
 
-    text = "<b>🛒 Ваша корзина:</b>\n\n"
-    kb = []
-
+    text = "<b>Ваш заказ:</b>\n\n"
     for item in cart:
-        text += f"{item['product']} ({item['variant']}) — {item['price']}₽ × {item['qty']}\n"
-        kb.append([
-            InlineKeyboardButton("➖", callback_data=f"qty_-_{item['key']}"),
-            InlineKeyboardButton(f"{item['qty']}", callback_data="noop"),
-            InlineKeyboardButton("➕", callback_data=f"qty_+_{item['key']}"),
-            InlineKeyboardButton("🗑", callback_data=f"rm_{item['key']}")
-        ])
+        text += f"— {item['name']} ({item['variant']}) — {item['price']}₽ x {item['qty']}\n"
 
-    total = calc_total(cart)
-    text += f"\n<b>Итого: {total} ₽</b>"
+    total = calc_total(msg.from_user.id)
+    text += f"\n<b>Итого: {total}₽</b>"
 
-    kb.append([InlineKeyboardButton("Оформить заказ", callback_data="checkout_start")])
-
-    await message.answer(
-        text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Оформить заказ", callback_data="checkout:start")]
+        ]
     )
 
-
-# ====== CHANGE QTY ======
-
-@cart_router.callback_query(lambda c: c.data.startswith("qty_"))
-async def change_qty(cb: types.CallbackQuery):
-    _, op, key = cb.data.split("_")
-
-    cart = await get_cart(cb.from_user.id)
-    item = next((x for x in cart if x["key"] == key), None)
-
-    if not item:
-        await cb.answer()
-        return
-
-    if op == "+":
-        item["qty"] += 1
-    elif op == "-" and item["qty"] > 1:
-        item["qty"] -= 1
-
-    await save_cart(cb.from_user.id, cart)
-    await cb.answer("Обновлено")
-    await show_cart(cb.message)
-
-
-# ====== REMOVE ITEM ======
-
-@cart_router.callback_query(lambda c: c.data.startswith("rm_"))
-async def remove_item(cb: types.CallbackQuery):
-    key = cb.data[3:]
-
-    cart = await get_cart(cb.from_user.id)
-    cart = [x for x in cart if x["key"] != key]
-
-    await save_cart(cb.from_user.id, cart)
-    await cb.answer("Удалено")
-    await show_cart(cb.message)
+    await msg.answer(text, reply_markup=kb)
