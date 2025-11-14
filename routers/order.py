@@ -1,123 +1,131 @@
-# order.py — PRO CHECKOUT
-
 from aiogram import Router, types
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton
+)
 
-from caching import cache_get
-from cart import get_cart, calc_total
-from config import ADMIN_CHAT_ID
+from routers.cart import get_cart, calc_total, clear_cart
+from caching import cache_set
+from google_sheets import load_products_safe
 
 order_router = Router()
 
 
-class Checkout(StatesGroup):
-    method = State()
-    address = State()
-    phone = State()
-    confirm = State()
+# ===== STEP 1. START ORDER =====
+@order_router.message(lambda m: m.text == "🛒 Оформить заказ")
+async def start_order(message: types.Message):
+    cart = await get_cart(message.from_user.id)
 
-
-@order_router.callback_query(lambda c: c.data == "checkout_start")
-async def checkout_start(cb: types.CallbackQuery, state: FSMContext):
-    cart = await get_cart(cb.from_user.id)
     if not cart:
-        await cb.answer("Корзина пуста")
+        await message.answer("🛒 Ваша корзина пуста!")
         return
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton("🚚 Доставка", callback_data="method_delivery")],
-            [InlineKeyboardButton("🏪 Самовывоз", callback_data="method_pickup")],
+    total = calc_total(cart)
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🚚 Доставка", callback_data="order_delivery"),
+            InlineKeyboardButton(text="🏬 Самовывоз", callback_data="order_pickup")
         ]
+    ])
+
+    await message.answer(
+        f"📦 <b>Оформление заказа</b>\n"
+        f"Ваш заказ на сумму <b>{total} ₽</b>\n\n"
+        f"Выберите способ получения:",
+        reply_markup=kb
     )
 
-    await cb.message.answer("Выберите способ получения:", reply_markup=kb)
-    await state.set_state(Checkout.method)
-    await cb.answer()
 
+# ===== STEP 2A — DELIVERY =====
+@order_router.callback_query(lambda c: c.data == "order_delivery")
+async def ask_address(callback: types.CallbackQuery):
 
-@order_router.callback_query(lambda c: c.data.startswith("method_"))
-async def choose_method(cb: types.CallbackQuery, state: FSMContext):
-    method = cb.data.split("_")[1]
-    await state.update_data(method=method)
-
-    if method == "pickup":
-        await state.update_data(address="Самовывоз")
-        return await request_phone(cb, state)
-
-    await cb.message.answer("Введите адрес доставки:")
-    await state.set_state(Checkout.address)
-    await cb.answer()
-
-
-@order_router.message(Checkout.address)
-async def set_address(message: types.Message, state: FSMContext):
-    await state.update_data(address=message.text)
-    await request_phone(message, state)
-
-
-async def request_phone(event, state):
     kb = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton("📱 Поделиться номером", request_contact=True)]
-        ],
+        keyboard=[[KeyboardButton(text="📍 Отправить геолокацию", request_location=True)]],
         resize_keyboard=True,
         one_time_keyboard=True
     )
-    await event.answer("Отправьте номер телефона:", reply_markup=kb)
-    await state.set_state(Checkout.phone)
+
+    await callback.message.answer(
+        "Введите адрес доставки или отправьте геолокацию:",
+        reply_markup=kb
+    )
+
+    await cache_set(f"order:{callback.from_user.id}:stage", "address")
+    await callback.answer()
 
 
-@order_router.message(Checkout.phone)
-async def get_phone(message: types.Message, state: FSMContext):
-    phone = None
+# ===== STEP 2B — PICKUP =====
+@order_router.callback_query(lambda c: c.data == "order_pickup")
+async def pickup_selected(callback: types.CallbackQuery):
+
+    await cache_set(f"order:{callback.from_user.id}:method", "pickup")
+
+    await callback.message.answer(
+        "<b>🏬 Самовывоз выбран</b>\n"
+        "Адрес: Москва, ул. Приречная 7\n\n"
+        "Теперь отправьте ваш номер телефона👇",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="📱 Поделиться номером", request_contact=True)]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+    )
+
+    await cache_set(f"order:{callback.from_user.id}:stage", "phone")
+    await callback.answer()
+
+
+# ===== STEP 3 — ADDRESS HANDLING =====
+@order_router.message(lambda m: True, flags={"stage": "address"})
+async def save_address(message: types.Message):
+    uid = message.from_user.id
+
+    if message.location:
+        address = f"Геолокация: {message.location.latitude}, {message.location.longitude}"
+    else:
+        address = message.text
+
+    await cache_set(f"order:{uid}:address", address)
+    await cache_set(f"order:{uid}:method", "delivery")
+    await cache_set(f"order:{uid}:stage", "phone")
+
+    await message.answer(
+        "Теперь отправьте ваш номер телефона👇",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="📱 Поделиться номером", request_contact=True)]],
+            resize_keyboard=True,
+            one_time_keyboard=True
+        )
+    )
+
+
+# ===== STEP 4 — PHONE =====
+@order_router.message(lambda m: m.contact or m.text.startswith("+"))
+async def receive_phone(message: types.Message):
+    uid = message.from_user.id
 
     if message.contact:
         phone = message.contact.phone_number
     else:
         phone = message.text
 
-    await state.update_data(phone=phone)
+    await cache_set(f"order:{uid}:phone", phone)
 
-    kb = ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton("Подтвердить заказ")]],
-        resize_keyboard=True,
-        one_time_keyboard=True
-    )
-
-    await message.answer("Проверьте данные и подтвердите заказ:", reply_markup=kb)
-    await state.set_state(Checkout.confirm)
-
-
-@order_router.message(Checkout.confirm)
-async def confirm_order(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    cart = await get_cart(message.from_user.id)
+    cart = await get_cart(uid)
+    products = await load_products_safe()
     total = calc_total(cart)
 
-    text = (
-        f"🆕 <b>Новый заказ</b>\n\n"
-        f"Покупатель: @{message.from_user.username}\n"
-        f"Метод: {data['method']}\n"
-        f"Адрес: {data['address']}\n"
-        f"Телефон: {data['phone']}\n\n"
-        f"Товаров: {len(cart)}\n"
-        f"Итого: <b>{total} ₽</b>\n\n"
-        f"Состав:\n"
+    method = await cache_set(f"order:{uid}:method")
+    address = await cache_set(f"order:{uid}:address")
+
+    # FINISH
+    await clear_cart(uid)
+
+    await message.answer(
+        "🎉 <b>Ваш заказ принят!</b>\n\n"
+        "Менеджер свяжется с вами в течение 24 часов 🙌\n\n"
+        f"📱 Ваш номер: <b>{phone}</b>",
+        reply_markup=types.ReplyKeyboardRemove()
     )
-
-    for i in cart:
-        text += f"• {i['product']} ({i['variant']}) — {i['price']}₽ × {i['qty']}\n"
-
-    await message.answer("Спасибо! В течение 24 часов менеджер свяжется с вами 👌")
-
-    # отправляем админу
-    await message.bot.send_message(ADMIN_CHAT_ID, text, parse_mode="HTML")
-
-    # очищаем корзину
-    from caching import cache_set
-    await cache_set(f"cart:{message.from_user.id}", "[]")
-
-    await state.clear()
