@@ -1,5 +1,8 @@
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from routers.debug_photos import debug_photos_router
+
+dp.include_router(debug_photos_router)
 
 from config import BOT_TOKEN
 
