@@ -1,160 +1,162 @@
-from aiogram import Router, types
+from aiogram import Router, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from utils.sheets import load_products
 
-
 cart_router = Router()
 
-# ❗ Корзины пользователей
-USER_CARTS = {}  # {user_id: [{id, name, variant, price, qty}]}
+# Хранилище корзин
+USER_CARTS = {}  # user_id: [ {id, name, variant, price, qty} ]
 
 
-def get_products():
-    """Грузим товары (без кеша — кеш в catalog.py)"""
-    return load_products()
+# === utils ===
+
+def get_cart(user_id):
+    return USER_CARTS.get(user_id, [])
 
 
-# ======================
-# 📌 Добавить в корзину
-# ======================
-@cart_router.callback_query(lambda c: c.data.startswith("add_"))
-async def add_to_cart(callback: types.CallbackQuery):
+def save_cart(user_id, items):
+    USER_CARTS[user_id] = items
+
+
+def add_to_cart(user_id, product_id, variant_name, price, product_name):
+    cart = get_cart(user_id)
+
+    # ищем существующую позицию
+    for item in cart:
+        if item["id"] == product_id and item["variant"] == variant_name:
+            item["qty"] += 1
+            save_cart(user_id, cart)
+            return
+
+    # добавляем новый товар
+    cart.append({
+        "id": product_id,
+        "name": product_name,
+        "variant": variant_name,
+        "price": price,
+        "qty": 1
+    })
+
+    save_cart(user_id, cart)
+
+
+def change_qty(user_id, idx, delta):
+    cart = get_cart(user_id)
+
+    if 0 <= idx < len(cart):
+        cart[idx]["qty"] += delta
+
+        if cart[idx]["qty"] <= 0:
+            cart.pop(idx)
+
+    save_cart(user_id, cart)
+
+
+def clear_cart(user_id):
+    USER_CARTS[user_id] = []
+
+
+def get_total(user_id):
+    cart = get_cart(user_id)
+    return sum(item["price"] * item["qty"] for item in cart)
+
+
+# === HANDLERS ===
+
+@cart_router.callback_query(F.data.startswith("add_"))
+async def add_item(callback: types.CallbackQuery):
     """
-    callback_data = add_{product_id}_{variant}
+    Формат callback: add_{productId}_{variantName}
+    Например: add_3_250 мл
     """
-    user_id = callback.from_user.id
-    _, product_id, variant = callback.data.split("_", 2)
+    parts = callback.data.split("_", 2)
+    product_id = parts[1]
+    variant_name = parts[2]
 
-    products = get_products()
-    product = next((p for p in products if p["id"] == product_id), None)
+    products = load_products()
+    product = next((x for x in products if x["id"] == product_id), None)
 
     if not product:
-        await callback.answer("Товар не найден", show_alert=True)
+        await callback.answer("Ошибка: товар не найден")
         return
 
-    # Найти цену варианта
-    if product.get("variants"):
-        v = next((v for v in product["variants"] if v["name"] == variant), None)
-        if not v:
-            await callback.answer("Вариант не найден", show_alert=True)
-            return
-        price = v["price"]
+    if product["variants"]:
+        variant = next((v for v in product["variants"] if v["name"] == variant_name), None)
+        price = variant["price"]
     else:
         price = product["base_price"]
 
-    # Корзина пользователя
-    cart = USER_CARTS.setdefault(user_id, [])
+    add_to_cart(
+        user_id=callback.from_user.id,
+        product_id=product_id,
+        variant_name=variant_name,
+        price=price,
+        product_name=product["name"],
+    )
 
-    # Если товар с этим вариантом уже есть — увеличиваем количество
-    existing = next((x for x in cart if x["id"] == product_id and x["variant"] == variant), None)
-
-    if existing:
-        existing["qty"] += 1
-    else:
-        cart.append({
-            "id": product_id,
-            "name": product["name"],
-            "variant": variant,
-            "price": price,
-            "qty": 1
-        })
-
-    await callback.answer("Добавлено в корзину 🎉")
+    await callback.answer("Добавлено!")
+    await show_cart(callback.message, callback.from_user.id)
 
 
-# ======================
-# 📌 Показать корзину
-# ======================
-@cart_router.message(lambda m: m.text == "🛒 Корзина")
-async def show_cart(message: types.Message):
-    user_id = message.from_user.id
-    cart = USER_CARTS.get(user_id, [])
+@cart_router.message(F.text == "🛒 Корзина")
+async def open_cart(message: types.Message):
+    await show_cart(message, message.from_user.id)
+
+
+async def show_cart(message: types.Message, user_id: int):
+    cart = get_cart(user_id)
 
     if not cart:
-        await message.answer("🛒 Корзина пуста")
+        await message.answer("🛒 Ваша корзина пуста.")
         return
 
-    # Общая сумма
-    total = sum(item["price"] * item["qty"] for item in cart)
+    total = get_total(user_id)
 
-    # Формируем сообщение
-    text = "<b>🛒 Ваша корзина:</b>\n\n"
-    for item in cart:
+    text = "🛒 <b>Ваша корзина:</b>\n\n"
+    kb_rows = []
+
+    for idx, item in enumerate(cart):
         text += (
-            f"<b>{item['name']}</b> — {item['variant']}\n"
-            f"Цена: {item['price']} ₽ × {item['qty']} = <b>{item['price'] * item['qty']} ₽</b>\n"
-            f"<i>ID: {item['id']}</i>\n\n"
+            f"• <b>{item['name']}</b> ({item['variant']})\n"
+            f"   {item['price']} ₽ × {item['qty']} = <b>{item['price'] * item['qty']} ₽</b>\n\n"
         )
 
-    text += f"<b>Итого: {total} ₽</b>"
+        kb_rows.append([
+            InlineKeyboardButton(text="➖", callback_data=f"dec_{idx}"),
+            InlineKeyboardButton(text="➕", callback_data=f"inc_{idx}")
+        ])
 
-    # Кнопки управления
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Увеличить", callback_data="cart_inc")],
-        [InlineKeyboardButton(text="➖ Уменьшить", callback_data="cart_dec")],
-        [InlineKeyboardButton(text="❌ Удалить товар", callback_data="cart_remove")],
-        [InlineKeyboardButton(text="🧹 Очистить корзину", callback_data="cart_clear")]
-    ])
+    text += f"💰 <b>Итого: {total} ₽</b>"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=kb_rows + [
+            [InlineKeyboardButton(text="🧹 Очистить", callback_data="clear_cart")],
+            [InlineKeyboardButton(text="📦 Оформить заказ", callback_data="checkout")]
+        ]
+    )
 
     await message.answer(text, parse_mode="HTML", reply_markup=kb)
 
 
-# ======================
-# ➕ Увеличить количество последнего товара
-# ======================
-@cart_router.callback_query(lambda c: c.data == "cart_inc")
-async def cart_inc(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    cart = USER_CARTS.get(user_id, [])
-
-    if cart:
-        cart[-1]["qty"] += 1
-
-    await callback.answer("Количество увеличено 👍")
-    await show_cart(callback.message)
+@cart_router.callback_query(F.data.startswith("inc_"))
+async def inc_item(callback: types.CallbackQuery):
+    idx = int(callback.data.split("_")[1])
+    change_qty(callback.from_user.id, idx, +1)
+    await callback.answer("Количество увеличено")
+    await show_cart(callback.message, callback.from_user.id)
 
 
-# ======================
-# ➖ Уменьшить количество последнего товара
-# ======================
-@cart_router.callback_query(lambda c: c.data == "cart_dec")
-async def cart_dec(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    cart = USER_CARTS.get(user_id, [])
-
-    if cart:
-        if cart[-1]["qty"] > 1:
-            cart[-1]["qty"] -= 1
-        else:
-            cart.pop()
-
+@cart_router.callback_query(F.data.startswith("dec_"))
+async def dec_item(callback: types.CallbackQuery):
+    idx = int(callback.data.split("_")[1])
+    change_qty(callback.from_user.id, idx, -1)
     await callback.answer("Количество уменьшено")
-    await show_cart(callback.message)
+    await show_cart(callback.message, callback.from_user.id)
 
 
-# ======================
-# ❌ Удалить последний товар
-# ======================
-@cart_router.callback_query(lambda c: c.data == "cart_remove")
-async def cart_remove(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    cart = USER_CARTS.get(user_id, [])
-
-    if cart:
-        cart.pop()
-
-    await callback.answer("Товар удалён")
-    await show_cart(callback.message)
-
-
-# ======================
-# 🧹 Полная очистка корзины
-# ======================
-@cart_router.callback_query(lambda c: c.data == "cart_clear")
-async def cart_clear(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    USER_CARTS[user_id] = []
-
+@cart_router.callback_query(F.data == "clear_cart")
+async def clear_cart_handler(callback: types.CallbackQuery):
+    clear_cart(callback.from_user.id)
     await callback.answer("Корзина очищена")
-    await callback.message.answer("🧹 Корзина пустая")
+    await callback.message.answer("🧹 Корзина очищена.")
