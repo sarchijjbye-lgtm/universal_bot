@@ -20,9 +20,16 @@ from middlewares.stage import StageMiddleware
 from middlewares.antiflood import AntiFloodMiddleware
 from middlewares.error_handler import ErrorHandlerMiddleware
 
+# антифлуд (только для сообщений)
 dp.message.middleware(AntiFloodMiddleware())
+
+# общий error handler
 dp.update.middleware(ErrorHandlerMiddleware())
+
+# ВАЖНО: StageMiddleware должен работать и на messages, и на callbacks
 dp.message.middleware(StageMiddleware())
+dp.callback_query.middleware(StageMiddleware())
+
 
 # ==== routers ====
 from routers.start import start_router
