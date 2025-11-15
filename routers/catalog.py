@@ -3,6 +3,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from google_sheets import load_products_safe
 from settings import get_setting
+from routers.start import CATALOG_BUTTON
 
 catalog_router = Router()
 
@@ -20,11 +21,11 @@ async def load_products_cached():
 
 
 # ===== /catalog (кнопка) =====
-@catalog_router.message(lambda m: m.text == "🛍️ Каталог")
+@catalog_router.message(lambda m: m.text == CATALOG_BUTTON)
 async def show_catalog(message: types.Message):
     products = await load_products_cached()
 
-    # Получаем уникальные категории
+    # категории есть теперь всегда
     categories = sorted({p["category"] for p in products})
 
     kb = InlineKeyboardBuilder()
@@ -55,7 +56,7 @@ async def show_category(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# ===== Открыть карточку товара =====
+# ===== Открыть карточку =====
 @catalog_router.callback_query(lambda c: c.data.startswith("prod:"))
 async def product_card(callback: types.CallbackQuery):
     _, product_id = callback.data.split(":", 1)
@@ -68,28 +69,26 @@ async def product_card(callback: types.CallbackQuery):
 
     caption = f"<b>{p['name']}</b>\n\n{p['description']}"
 
-    # ===== Если есть file_id (кеш Telegram) =====
+    # Если есть file_id
     if p.get("file_id"):
         await callback.message.answer_photo(
             p["file_id"],
             caption=caption,
             reply_markup=_variants_keyboard(p)
         )
-    # ===== Если фото — URL =====
-    elif p.get("photo_url") and p["photo_url"].startswith("http"):
+    # Фото — URL
+    elif p.get("photo_url"):
         msg = await callback.message.answer_photo(
             p["photo_url"],
             caption=caption,
             reply_markup=_variants_keyboard(p)
         )
-        # сохраняем file_id для ускорения
+        # Сохраняем file_id
         try:
-            file_id = msg.photo[-1].file_id
-            p["file_id"] = file_id
+            p["file_id"] = msg.photo[-1].file_id
         except:
             pass
-
-    # ===== Если фото нет =====
+    # Фото нет
     else:
         await callback.message.answer(
             caption,
@@ -99,7 +98,7 @@ async def product_card(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# ===== Генератор клавиатуры вариантов =====
+# ===== Варианты =====
 def _variants_keyboard(product):
     kb = InlineKeyboardBuilder()
     for v in product["variants"]:
@@ -107,7 +106,5 @@ def _variants_keyboard(product):
             text=v["label"],
             callback_data=f"addcart:{product['id']}:{v['id']}"
         )
-
     kb.adjust(1)
     return kb.as_markup()
-
