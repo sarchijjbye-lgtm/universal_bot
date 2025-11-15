@@ -9,10 +9,12 @@ from settings import get_setting
 order_router = Router()
 
 
+# ===== НАЖАТА КНОПКА "Оформить заказ" =====
 @order_router.callback_query(lambda c: c.data == "checkout:start")
 async def checkout_start(callback: CallbackQuery, set_stage):
 
     await set_stage("method")
+
     kb = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🚚 Доставка")],
@@ -26,17 +28,21 @@ async def checkout_start(callback: CallbackQuery, set_stage):
         "Выберите способ получения:",
         reply_markup=kb
     )
+
     await callback.answer()
 
 
+# ===== ВЫБОР СПОСОБА ПОЛУЧЕНИЯ =====
 @order_router.message(lambda m: m.text in ["🚚 Доставка", "🏪 Самовывоз"])
 async def checkout_method(msg: Message, stage, set_stage):
 
     if stage != "method":
         return
 
+    # --- Самовывоз ---
     if msg.text == "🏪 Самовывоз":
         address = get_setting("pickup_address")
+
         await msg.answer(
             f"🏪 Самовывоз по адресу:\n<b>{address}</b>\n\nТеперь отправьте номер телефона.",
             reply_markup=ReplyKeyboardMarkup(
@@ -45,18 +51,21 @@ async def checkout_method(msg: Message, stage, set_stage):
             )
         )
         await set_stage("contact")
-    else:
-        await msg.answer(
-            "Введите адрес доставки:",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="Отправить геолокацию", request_location=True)]],
-                resize_keyboard=True
-            )
+        return
+
+    # --- Доставка ---
+    await msg.answer(
+        "Введите адрес доставки (или отправьте геолокацию):",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="📍 Отправить геолокацию", request_location=True)]],
+            resize_keyboard=True
         )
-        await set_stage("address")
+    )
+    await set_stage("address")
 
 
-@order_router.message(lambda m: m.location is not None or m.text and m.text.strip())
+# ===== ПОЛУЧЕН АДРЕС ИЛИ ТЕКСТ =====
+@order_router.message(lambda m: m.location is not None or (m.text and m.text.strip()))
 async def checkout_address(msg: Message, stage, set_stage):
 
     if stage != "address":
@@ -69,9 +78,11 @@ async def checkout_address(msg: Message, stage, set_stage):
             resize_keyboard=True
         )
     )
+
     await set_stage("contact")
 
 
+# ===== ПОЛУЧЕН НОМЕР ТЕЛЕФОНА =====
 @order_router.message(lambda m: m.contact is not None)
 async def checkout_contact(msg: Message, stage, set_stage):
 
@@ -94,5 +105,5 @@ async def checkout_contact(msg: Message, stage, set_stage):
 {finish_text}
 """
 
-    await msg.answer(text, reply_markup=None)
+    await msg.answer(text)
     await set_stage(None)
