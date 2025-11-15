@@ -1,40 +1,44 @@
 # middlewares/stage.py
 
 from aiogram import BaseMiddleware
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from typing import Callable, Dict, Any, Awaitable
 
 
 class StageMiddleware(BaseMiddleware):
     """
-    Middleware для хранения шага оформления заказа в FSM-подобном стиле.
-    Хранится в user_data, не требует FSM.
+    Универсальный middleware для хранения шага (stage)
+    подходит для Message и CallbackQuery.
     """
+
+    # Runtime-хранилище (на сервере)
+    stage_storage: Dict[int, str] = {}
 
     async def __call__(
         self,
-        handler: Callable[[Message, Dict[str, Any]], Awaitable[Any]],
-        event: Message,
+        handler: Callable[[Any, Dict[str, Any]], Awaitable[Any]],
+        event: Any,
         data: Dict[str, Any]
     ) -> Any:
 
-        user_id = event.from_user.id
+        # Универсально получаем user_id
+        if isinstance(event, Message):
+            user_id = event.from_user.id
+        elif isinstance(event, CallbackQuery):
+            user_id = event.from_user.id
+        else:
+            return await handler(event, data)
 
-        if "stage_storage" not in data:
-            data["stage_storage"] = {}  # runtime storage
-
-        stage_storage = data["stage_storage"]
-
-        # Получаем текущий шаг
-        stage = stage_storage.get(user_id, None)
+        # Текущий stage
+        stage = self.stage_storage.get(user_id)
         data["stage"] = stage
 
-        # Функция изменения шага
+        # Функция изменения stage
         async def set_stage(new_stage: str | None):
             if new_stage is None:
-                stage_storage.pop(user_id, None)
+                self.stage_storage.pop(user_id, None)
             else:
-                stage_storage[user_id] = new_stage
+                self.stage_storage[user_id] = new_stage
 
         data["set_stage"] = set_stage
 
