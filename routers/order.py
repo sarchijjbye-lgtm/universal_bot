@@ -8,8 +8,24 @@ from settings import get_setting
 
 order_router = Router()
 
+# НОРМАЛИЗАТОР ТЕКСТА КНОПОК
+def normalize(text: str) -> str:
+    """
+    Убирает эмодзи и лишние пробелы.
+    Чтобы текст кнопок мог быть любым.
+    """
+    return (
+        text.replace("🏬", "")
+            .replace("🏪", "")
+            .replace("🚚", "")
+            .replace("🚛", "")
+            .replace("📦", "")
+            .replace(" ", "")
+            .lower()
+    )
 
-# ===== НАЖАТА КНОПКА "Оформить заказ" =====
+
+# ===== START CHECKOUT =====
 @order_router.callback_query(lambda c: c.data == "checkout:start")
 async def checkout_start(callback: CallbackQuery, set_stage):
 
@@ -17,8 +33,8 @@ async def checkout_start(callback: CallbackQuery, set_stage):
 
     kb = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🚚 Доставка")],
             [KeyboardButton(text="🏪 Самовывоз")],
+            [KeyboardButton(text="🚚 Доставка")],
         ],
         resize_keyboard=True,
         one_time_keyboard=True
@@ -28,21 +44,24 @@ async def checkout_start(callback: CallbackQuery, set_stage):
         "Выберите способ получения:",
         reply_markup=kb
     )
-
     await callback.answer()
 
 
-# ===== ВЫБОР СПОСОБА ПОЛУЧЕНИЯ =====
-@order_router.message(lambda m: m.text in ["🚚 Доставка", "🏪 Самовывоз"])
+# ===== METHOD SELECTED =====
+@order_router.message()
 async def checkout_method(msg: Message, stage, set_stage):
 
     if stage != "method":
         return
 
-    # --- Самовывоз ---
-    if msg.text == "🏪 Самовывоз":
-        address = get_setting("pickup_address")
+    user_choice = normalize(msg.text)
 
+    pick = normalize("самовывоз")
+    delivery = normalize("доставка")
+
+    # ---- Самовывоз ----
+    if pick in user_choice:
+        address = get_setting("pickup_address")
         await msg.answer(
             f"🏪 Самовывоз по адресу:\n<b>{address}</b>\n\nТеперь отправьте номер телефона.",
             reply_markup=ReplyKeyboardMarkup(
@@ -53,18 +72,20 @@ async def checkout_method(msg: Message, stage, set_stage):
         await set_stage("contact")
         return
 
-    # --- Доставка ---
-    await msg.answer(
-        "Введите адрес доставки (или отправьте геолокацию):",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="📍 Отправить геолокацию", request_location=True)]],
-            resize_keyboard=True
+    # ---- Доставка ----
+    if delivery in user_choice:
+        await msg.answer(
+            "Введите адрес доставки или отправьте геолокацию:",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="📍 Отправить геолокацию", request_location=True)]],
+                resize_keyboard=True
+            )
         )
-    )
-    await set_stage("address")
+        await set_stage("address")
+        return
 
 
-# ===== ПОЛУЧЕН АДРЕС ИЛИ ТЕКСТ =====
+# ===== ADDRESS =====
 @order_router.message(lambda m: m.location is not None or (m.text and m.text.strip()))
 async def checkout_address(msg: Message, stage, set_stage):
 
@@ -78,11 +99,10 @@ async def checkout_address(msg: Message, stage, set_stage):
             resize_keyboard=True
         )
     )
-
     await set_stage("contact")
 
 
-# ===== ПОЛУЧЕН НОМЕР ТЕЛЕФОНА =====
+# ===== CONTACT =====
 @order_router.message(lambda m: m.contact is not None)
 async def checkout_contact(msg: Message, stage, set_stage):
 
