@@ -29,9 +29,6 @@ client = gspread.authorize(credentials)
 
 # === UNIVERSAL: Open sheet by name ===
 def connect_to_sheet(sheet_name: str):
-    """
-    Returns worksheet by name.
-    """
     try:
         sh = client.open_by_key(GOOGLE_SHEET_ID)
         return sh.worksheet(sheet_name)
@@ -40,41 +37,53 @@ def connect_to_sheet(sheet_name: str):
         raise
 
 
-# === PRODUCTS LOADER ===
+# === MAIN LOADER ===
 def load_products_safe():
     """
-    Returns catalog in normalized structure:
-    [
-       {
-          "id": "1",
-          "name": "Тыквенное масло",
-          "description": "...",
-          "photo_file_id": "...",
-          "variants": [
-               {"id": "v1", "label": "250ml", "price": 600},
-               {"id": "v2", "label": "500ml", "price": 1100}
-          ]
-       },
-       ...
-    ]
+    Структура товара после загрузки:
+
+    {
+        "id": "1",
+        "category": "Масла",
+        "name": "Масло льняное",
+        "description": "...",
+        "photo_url": "http://...",
+        "file_id": "",
+        "variants": [
+            {"id": "250", "label": "250 мл", "price": 350},
+            {"id": "500", "label": "500 мл", "price": 600}
+        ],
+        "active": True
+    }
     """
 
     ws = connect_to_sheet("Products")
     rows = ws.get_all_records()
 
     products = []
+
     for row in rows:
+        # Пропуск неактивных товаров
+        if str(row.get("active")).strip().upper() not in ["TRUE", "1", "YES"]:
+            continue
+
+        # Разбор вариантов JSON
         try:
-            variants = json.loads(row["variants"]) if row.get("variants") else []
+            variants = json.loads(row.get("variants", "")) if row.get("variants") else []
         except:
             variants = []
 
-        products.append({
-            "id": str(row["id"]),
+        product = {
+            "id": str(row.get("id", "")),
+            "category": row.get("category", "Без категории").strip(),
             "name": row.get("name", "Без названия"),
             "description": row.get("description", ""),
-            "photo_file_id": row.get("photo_file_id", ""),
-            "variants": variants
-        })
+            "photo_url": row.get("photo_url", "").strip(),
+            "file_id": row.get("file_id", "").strip(),   # локальный кеш Telegram file_id
+            "variants": variants,
+            "active": True
+        }
+
+        products.append(product)
 
     return products
