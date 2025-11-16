@@ -40,21 +40,20 @@ def connect_to_sheet(sheet_name: str):
 # === MAIN LOADER ===
 def load_products_safe():
     """
-    Структура товара после загрузки:
-
-    {
-        "id": "1",
-        "category": "Масла",
-        "name": "Масло льняное",
-        "description": "...",
-        "photo_url": "http://...",
-        "file_id": "",
-        "variants": [
-            {"id": "250", "label": "250 мл", "price": 350},
-            {"id": "500", "label": "500 мл", "price": 600}
-        ],
-        "active": True
-    }
+    Полная загрузка каталога из Google Sheets.
+    Поддерживает поля:
+    - id
+    - category
+    - name
+    - description
+    - base_price
+    - our_price
+    - supplier
+    - variants (JSON)
+    - photo_url
+    - file_id
+    - stock
+    - active
     """
 
     ws = connect_to_sheet("Products")
@@ -63,24 +62,39 @@ def load_products_safe():
     products = []
 
     for row in rows:
-        # Пропуск неактивных товаров
-        if str(row.get("active")).strip().upper() not in ["TRUE", "1", "YES"]:
+
+        # Пропуск выключенных товаров
+        if str(row.get("active")).strip().lower() not in ("true", "1", "yes"):
             continue
 
-        # Разбор вариантов JSON
+        # Разбор variants
         try:
             variants = json.loads(row.get("variants", "")) if row.get("variants") else []
         except:
             variants = []
 
+        # stock (оставляем None если пусто)
+        stock_raw = row.get("stock")
+        if stock_raw in (None, "", " "):
+            stock = None
+        else:
+            try:
+                stock = int(stock_raw)
+            except:
+                stock = None
+
         product = {
-            "id": str(row.get("id", "")),
+            "id": str(row.get("id", "")).strip(),
             "category": row.get("category", "Без категории").strip(),
             "name": row.get("name", "Без названия"),
             "description": row.get("description", ""),
-            "photo_url": row.get("photo_url", "").strip(),
-            "file_id": row.get("file_id", "").strip(),   # локальный кеш Telegram file_id
+            "base_price": row.get("base_price") or 0,
+            "our_price": row.get("our_price") or None,
+            "supplier": row.get("supplier") or "",
             "variants": variants,
+            "photo_url": row.get("photo_url", "").strip(),
+            "file_id": row.get("file_id", "").strip(),
+            "stock": stock,
             "active": True
         }
 
