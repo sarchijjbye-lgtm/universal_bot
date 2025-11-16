@@ -6,26 +6,25 @@ from aiogram.types import CallbackQuery, Message, KeyboardButton, ReplyKeyboardM
 from routers.cart import get_cart, calc_total
 from settings import get_setting
 
+
 order_router = Router()
 
-# НОРМАЛИЗАТОР ТЕКСТА КНОПОК
-def normalize(text: str) -> str:
-    """
-    Убирает эмодзи и лишние пробелы.
-    Чтобы текст кнопок мог быть любым.
-    """
+# НОРМАЛИЗАЦИЯ ТЕКСТА
+def normalize(text: str | None) -> str:
+    if not text:
+        return ""
     return (
-        text.replace("🏬", "")
-            .replace("🏪", "")
+        text.replace("🏪", "")
             .replace("🚚", "")
-            .replace("🚛", "")
-            .replace("📦", "")
             .replace(" ", "")
             .lower()
     )
 
 
-# ===== START CHECKOUT =====
+# ============================
+#   START CHECKOUT
+# ============================
+
 @order_router.callback_query(lambda c: c.data == "checkout:start")
 async def checkout_start(callback: CallbackQuery, set_stage):
 
@@ -36,8 +35,7 @@ async def checkout_start(callback: CallbackQuery, set_stage):
             [KeyboardButton(text="🏪 Самовывоз")],
             [KeyboardButton(text="🚚 Доставка")],
         ],
-        resize_keyboard=True,
-        one_time_keyboard=True
+        resize_keyboard=True
     )
 
     await callback.message.answer(
@@ -47,23 +45,23 @@ async def checkout_start(callback: CallbackQuery, set_stage):
     await callback.answer()
 
 
-# ===== METHOD SELECTED =====
-@order_router.message()
+# ============================
+#   METHOD SELECTOR
+# ============================
+
+@order_router.message(lambda m: normalize(m.text) in ["самовывоз", "доставка"])
 async def checkout_method(msg: Message, stage, set_stage):
 
     if stage != "method":
         return
 
-    user_choice = normalize(msg.text)
-
-    pick = normalize("самовывоз")
-    delivery = normalize("доставка")
+    choice = normalize(msg.text)
 
     # ---- Самовывоз ----
-    if pick in user_choice:
+    if choice == "самовывоз":
         address = get_setting("pickup_address")
         await msg.answer(
-            f"🏪 Самовывоз по адресу:\n<b>{address}</b>\n\nТеперь отправьте номер телефона.",
+            f"🏪 Самовывоз по адресу:\n<b>{address}</b>\n\nТеперь отправьте номер телефона:",
             reply_markup=ReplyKeyboardMarkup(
                 keyboard=[[KeyboardButton(text="📱 Поделиться номером", request_contact=True)]],
                 resize_keyboard=True
@@ -73,7 +71,7 @@ async def checkout_method(msg: Message, stage, set_stage):
         return
 
     # ---- Доставка ----
-    if delivery in user_choice:
+    if choice == "доставка":
         await msg.answer(
             "Введите адрес доставки или отправьте геолокацию:",
             reply_markup=ReplyKeyboardMarkup(
@@ -85,9 +83,12 @@ async def checkout_method(msg: Message, stage, set_stage):
         return
 
 
-# ===== ADDRESS =====
-@order_router.message(lambda m: m.location is not None or (m.text and m.text.strip()))
-async def checkout_address(msg: Message, stage, set_stage):
+# ============================
+#   ADDRESS INPUT
+# ============================
+
+@order_router.message(lambda m: m.location is not None)
+async def checkout_address_geo(msg: Message, stage, set_stage):
 
     if stage != "address":
         return
@@ -102,7 +103,28 @@ async def checkout_address(msg: Message, stage, set_stage):
     await set_stage("contact")
 
 
-# ===== CONTACT =====
+# ----- обычный текст адреса -----
+@order_router.message(lambda m: m.text and len(m.text) > 3)
+async def checkout_address_text(msg: Message, stage, set_stage):
+
+    if stage != "address":
+        return
+
+    await msg.answer(
+        "Спасибо! Теперь отправьте номер телефона:",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="📱 Поделиться номером", request_contact=True)]],
+            resize_keyboard=True
+        )
+    )
+
+    await set_stage("contact")
+
+
+# ============================
+#   CONTACT
+# ============================
+
 @order_router.message(lambda m: m.contact is not None)
 async def checkout_contact(msg: Message, stage, set_stage):
 
@@ -119,7 +141,7 @@ async def checkout_contact(msg: Message, stage, set_stage):
     text = f"""
 <b>{shop_name}</b>
 
-Ваш заказ оформлен!  
+Ваш заказ оформлен!
 Сумма: <b>{total}₽</b>
 
 {finish_text}
