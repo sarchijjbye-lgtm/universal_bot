@@ -1,3 +1,5 @@
+# utils/sheets.py
+
 import gspread
 import json
 from oauth2client.service_account import ServiceAccountCredentials
@@ -24,21 +26,35 @@ def load_products():
     products = []
 
     for r in rows:
-        variants = []
-        if r.get("variants"):
+
+        # variants
+        try:
+            variants = json.loads(r.get("variants", "")) if r.get("variants") else []
+        except:
+            variants = []
+
+        # stock
+        stock_raw = r.get("stock")
+        if stock_raw in ("", None):
+            stock = None
+        else:
             try:
-                variants = json.loads(r["variants"])
-            except Exception:
-                variants = []
+                stock = int(stock_raw)
+            except:
+                stock = None
 
         products.append({
-            "id": str(r["id"]),
-            "category": r["category"],
-            "name": r["name"],
+            "id": str(r.get("id", "")),
+            "category": r.get("category", ""),
+            "name": r.get("name", ""),
             "description": r.get("description") or "",
             "base_price": int(r.get("base_price") or 0),
+            "our_price": r.get("our_price") or None,
+            "supplier": r.get("supplier") or "",
             "variants": variants,
-            "photo": r.get("photo_url") or "",
+            "photo_url": r.get("photo_url") or "",
+            "file_id": r.get("file_id") or "",
+            "stock": stock,
             "active": str(r.get("active", "")).lower() in ("true", "1", "yes")
         })
 
