@@ -8,6 +8,8 @@ from config import BOT_TOKEN
 
 logging.basicConfig(level=logging.INFO)
 
+# ========= BOT =========
+
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode="HTML")
@@ -15,33 +17,36 @@ bot = Bot(
 
 dp = Dispatcher()
 
-# ==== middleware ====
+# ========= MIDDLEWARES =========
+
 from middlewares.stage import StageMiddleware
 from middlewares.antiflood import AntiFloodMiddleware
 from middlewares.error_handler import ErrorHandlerMiddleware
 
-# антифлуд (только для сообщений)
+# антифлуд
 dp.message.middleware(AntiFloodMiddleware())
 
-# общий error handler
+# error handler
 dp.update.middleware(ErrorHandlerMiddleware())
 
-# ВАЖНО: StageMiddleware должен работать и на messages, и на callbacks
+# стейджи для checkout
 dp.message.middleware(StageMiddleware())
 dp.callback_query.middleware(StageMiddleware())
 
 
-# ==== routers ====
+# ========= ROUTERS =========
+
 from routers.start import start_router
 from routers.catalog import catalog_router
 from routers.cart import cart_router
 from routers.order import order_router
-from routers.debug_photos import debug_photos_router
+from routers.admin_router import admin_router   # <-- добавлен
 
+# Регистрируем все роутеры
 dp.include_router(start_router)
 dp.include_router(catalog_router)
 dp.include_router(cart_router)
 dp.include_router(order_router)
-dp.include_router(debug_photos_router)
+dp.include_router(admin_router)
 
 print("[INIT] Routers connected. Bot ready.")
