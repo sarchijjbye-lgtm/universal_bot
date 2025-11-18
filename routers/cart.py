@@ -3,6 +3,7 @@
 from aiogram import Router
 from aiogram.types import (
     CallbackQuery,
+    Message,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
@@ -33,7 +34,7 @@ def clear_cart(uid: int):
 def render_cart_text(uid: int):
     items = get_cart(uid)
     if not items:
-        return "🛒 <b>Корзина пуста</b>"
+        return "🛒 <b>Корзина пуста</b>\n\nДобавьте товары из каталога."
 
     lines = ["<b>🛒 Ваша корзина:</b>", ""]
     for item in items:
@@ -42,12 +43,20 @@ def render_cart_text(uid: int):
         )
     lines.append("")
     lines.append(f"<b>Итого: {calc_total(uid)}₽</b>")
+
     return "\n".join(lines)
 
 
 def build_cart_keyboard(uid: int):
     items = get_cart(uid)
     kb = []
+
+    if not items:
+        return InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="🛍 В каталог", callback_data="catalog_back")]
+            ]
+        )
 
     for idx, item in enumerate(items):
         kb.append([
@@ -59,16 +68,28 @@ def build_cart_keyboard(uid: int):
             InlineKeyboardButton(text="❌ Удалить", callback_data=f"cart_del:{idx}")
         ])
 
-    if items:
-        kb.append([
-            InlineKeyboardButton(text="💳 Оформить заказ", callback_data="checkout:start")
-        ])
+    kb.append([InlineKeyboardButton(text="💳 Оформить заказ", callback_data="checkout:start")])
+    kb.append([InlineKeyboardButton(text="🛍 В каталог", callback_data="catalog_back")])
 
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 # ============================================================
-# ДОБАВЛЕНИЕ ТОВАРА
+# ОБРАБОТЧИК REPLY-КНОПКИ "Корзина"
+# ============================================================
+
+@cart_router.message(lambda m: m.text in ["🛒 Корзина", "Корзина"])
+async def cart_from_message(msg: Message):
+    uid = msg.from_user.id
+
+    text = render_cart_text(uid)
+    kb = build_cart_keyboard(uid)
+
+    await msg.answer(text, reply_markup=kb)
+
+
+# ============================================================
+# ДОБАВЛЕНИЕ ТОВАРА В КОРЗИНУ
 # ============================================================
 
 @cart_router.callback_query(lambda c: c.data.startswith("addcart:"))
@@ -81,15 +102,15 @@ async def add_to_cart(callback: CallbackQuery):
 
     child = next((x for x in products if x["id"] == child_id), None)
     if not child:
-        return await callback.answer("Вариация не найдена", show_alert=True)
+        return await callback.answer("Ошибка: вариация не найдена", show_alert=True)
 
-    user_cart = CART.setdefault(user_id, [])
-    existing = next((x for x in user_cart if x["child_id"] == child_id), None)
+    cart = CART.setdefault(user_id, [])
+    existing = next((x for x in cart if x["child_id"] == child_id), None)
 
     if existing:
         existing["qty"] += 1
     else:
-        user_cart.append({
+        cart.append({
             "child_id": child_id,
             "name": child["name"],
             "variant": child["variant_label"],
@@ -97,10 +118,11 @@ async def add_to_cart(callback: CallbackQuery):
             "qty": 1
         })
 
+    # Клавиатура после добавления
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🛒 Корзина", callback_data="cart_open")],
-            [InlineKeyboardButton(text="🛍 Каталог", callback_data="catalog_back")]
+            [InlineKeyboardButton(text="🛍 Каталог", callback_data="catalog_back")],
         ]
     )
 
@@ -122,14 +144,13 @@ async def cart_open(callback: CallbackQuery):
     try:
         await callback.message.edit_text(text, reply_markup=kb)
     except:
-        # Если fails — отправляем новое сообщение
         await callback.message.answer(text, reply_markup=kb)
 
     await callback.answer()
 
 
 # ============================================================
-# ➕ УВЕЛИЧЕНИЕ КОЛИЧЕСТВА
+# ➕ УВЕЛИЧИТЬ
 # ============================================================
 
 @cart_router.callback_query(lambda c: c.data.startswith("cart_plus:"))
@@ -140,17 +161,17 @@ async def cart_plus(callback: CallbackQuery):
     try:
         CART[uid][idx]["qty"] += 1
     except:
-        return await callback.answer("Ошибка", show_alert=True)
+        return await callback.answer("Ошибка")
 
     text = render_cart_text(uid)
     kb = build_cart_keyboard(uid)
 
     await callback.message.edit_text(text, reply_markup=kb)
-    await callback.answer("Корзина обновлена")
+    await callback.answer("Количество увеличено")
 
 
 # ============================================================
-# ➖ УМЕНЬШЕНИЕ КОЛИЧЕСТВА
+# ➖ УМЕНЬШИТЬ
 # ============================================================
 
 @cart_router.callback_query(lambda c: c.data.startswith("cart_minus:"))
@@ -161,7 +182,7 @@ async def cart_minus(callback: CallbackQuery):
     try:
         item = CART[uid][idx]
     except:
-        return await callback.answer("Ошибка", show_alert=True)
+        return await callback.answer("Ошибка")
 
     if item["qty"] > 1:
         item["qty"] -= 1
@@ -172,11 +193,11 @@ async def cart_minus(callback: CallbackQuery):
     kb = build_cart_keyboard(uid)
 
     await callback.message.edit_text(text, reply_markup=kb)
-    await callback.answer("Корзина обновлена")
+    await callback.answer("Количество уменьшено")
 
 
 # ============================================================
-# ❌ УДАЛЕНИЕ ТОВАРА
+# ❌ УДАЛИТЬ
 # ============================================================
 
 @cart_router.callback_query(lambda c: c.data.startswith("cart_del:"))
@@ -193,4 +214,4 @@ async def cart_del(callback: CallbackQuery):
     kb = build_cart_keyboard(uid)
 
     await callback.message.edit_text(text, reply_markup=kb)
-    await callback.answer("Товар удалён")
+    await callback.answer("Удалено")
