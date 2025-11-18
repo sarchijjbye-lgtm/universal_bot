@@ -5,7 +5,6 @@ from oauth2client.service_account import ServiceAccountCredentials
 import json
 import os
 
-# === Load credentials ===
 GOOGLE_SHEET_CREDENTIALS = os.getenv("GOOGLE_SHEET_CREDENTIALS")
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
@@ -15,7 +14,6 @@ if not GOOGLE_SHEET_CREDENTIALS:
 if not GOOGLE_SHEET_ID:
     raise Exception("ENV GOOGLE_SHEET_ID missing!")
 
-# Convert JSON env string into dict
 creds_dict = json.loads(GOOGLE_SHEET_CREDENTIALS)
 
 scope = [
@@ -27,35 +25,12 @@ credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope
 client = gspread.authorize(credentials)
 
 
-# === UNIVERSAL: Open sheet by name ===
 def connect_to_sheet(sheet_name: str):
-    try:
-        sh = client.open_by_key(GOOGLE_SHEET_ID)
-        return sh.worksheet(sheet_name)
-    except Exception as e:
-        print(f"[GSHEETS ERROR] Could not open sheet {sheet_name}: {e}")
-        raise
+    sh = client.open_by_key(GOOGLE_SHEET_ID)
+    return sh.worksheet(sheet_name)
 
 
-# === MAIN LOADER ===
 def load_products_safe():
-    """
-    Полная загрузка каталога из Google Sheets.
-    Поддерживает поля:
-    - id
-    - category
-    - name
-    - description
-    - base_price
-    - our_price
-    - supplier
-    - variants (JSON)
-    - photo_url
-    - file_id
-    - stock
-    - active
-    """
-
     ws = connect_to_sheet("Products")
     rows = ws.get_all_records()
 
@@ -63,41 +38,61 @@ def load_products_safe():
 
     for row in rows:
 
-        # Пропуск выключенных товаров
+        # only active = true
         if str(row.get("active")).strip().lower() not in ("true", "1", "yes"):
             continue
 
-        # Разбор variants
+        # stock
+        raw_stock = row.get("stock")
         try:
-            variants = json.loads(row.get("variants", "")) if row.get("variants") else []
+            stock = int(raw_stock) if raw_stock not in (None, "", " ") else None
         except:
-            variants = []
-
-        # stock (оставляем None если пусто)
-        stock_raw = row.get("stock")
-        if stock_raw in (None, "", " "):
             stock = None
-        else:
-            try:
-                stock = int(stock_raw)
-            except:
-                stock = None
 
-        product = {
+        products.append({
             "id": str(row.get("id", "")).strip(),
-            "category": row.get("category", "Без категории").strip(),
-            "name": row.get("name", "Без названия"),
+            "parent_id": str(row.get("parent_id", "")).strip() or None,
+            "category": row.get("category", "").strip(),
+            "name": row.get("name", "").strip(),
+            "variant_label": row.get("variant_label", "").strip(),
+            "price": int(row.get("price") or 0),
             "description": row.get("description", ""),
-            "base_price": row.get("base_price") or 0,
             "our_price": row.get("our_price") or None,
             "supplier": row.get("supplier") or "",
-            "variants": variants,
-            "photo_url": row.get("photo_url", "").strip(),
-            "file_id": row.get("file_id", "").strip(),
             "stock": stock,
-            "active": True
-        }
-
-        products.append(product)
+            "photo_url": row.get("photo_url", "").strip(),
+            "file_id": row.get("file_id", "").strip()
+        })
 
     return products
+
+
+def update_stock(product_id: str, new_stock: int):
+    """
+    Записывает новый stock в Google Sheets.
+    Если stock = 0 → active = FALSE.
+    """
+    ws = connect_to_sheet("Products")
+    rows = ws.get_all_records()
+
+    for idx, r in enumerate(rows, start=2):  # data starts at row 2
+        if str(r.get("id")) == str(product_id):
+
+            ws.update_cell(idx, 10, new_stock)  # stock column
+            if new_stock <= 0:
+                ws.update_cell(idx, 13, "FALSE")  # active column
+
+            return True
+
+    return False
+
+
+def update_file_id(product_id: str, file_id: str):
+    ws = connect_to_sheet("Products")
+    rows = ws.get_all_records()
+
+    for idx, r in enumerate(rows, start=2):
+        if str(r.get("id")) == str(product_id):
+            ws.update_cell(idx, 12, file_id)
+            return True
+    return False
