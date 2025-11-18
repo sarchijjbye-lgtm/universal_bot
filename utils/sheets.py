@@ -13,8 +13,8 @@ def connect():
         "https://www.googleapis.com/auth/drive.file",
     ]
 
-    service_account_info = json.loads(GOOGLE_SA_JSON)
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(service_account_info, scope)
+    sa = json.loads(GOOGLE_SA_JSON)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(sa, scope)
     return gspread.authorize(creds)
 
 
@@ -26,36 +26,26 @@ def load_products():
     products = []
 
     for r in rows:
-
-        # variants
+        raw_stock = r.get("stock")
         try:
-            variants = json.loads(r.get("variants", "")) if r.get("variants") else []
+            stock = int(raw_stock) if raw_stock not in ("", None) else None
         except:
-            variants = []
-
-        # stock
-        stock_raw = r.get("stock")
-        if stock_raw in ("", None):
             stock = None
-        else:
-            try:
-                stock = int(stock_raw)
-            except:
-                stock = None
 
         products.append({
             "id": str(r.get("id", "")),
+            "parent_id": str(r.get("parent_id", "")).strip() or None,
             "category": r.get("category", ""),
             "name": r.get("name", ""),
+            "variant_label": r.get("variant_label", ""),
+            "price": int(r.get("price") or 0),
             "description": r.get("description") or "",
-            "base_price": int(r.get("base_price") or 0),
             "our_price": r.get("our_price") or None,
             "supplier": r.get("supplier") or "",
-            "variants": variants,
+            "stock": stock,
             "photo_url": r.get("photo_url") or "",
             "file_id": r.get("file_id") or "",
-            "stock": stock,
-            "active": str(r.get("active", "")).lower() in ("true", "1", "yes")
+            "active": str(r.get("active")).lower() in ("true", "1", "yes")
         })
 
     return [p for p in products if p["active"]]
@@ -64,6 +54,7 @@ def load_products():
 def add_order(order):
     client = connect()
     sheet = client.open(SPREADSHEET_NAME).sheet1
+
     sheet.append_row([
         order["tg_id"],
         order["name"],
