@@ -170,6 +170,35 @@ async def checkout_contact(msg: Message, stage, set_stage):
     except Exception as e:
         print(f"[ORDERS] Ошибка записи в Google Sheets: {e}")
 
+# ============================
+#  УВЕДОМЛЕНИЕ АДМИНУ О ЗАКАЗЕ
+# ============================
+
+if ADMIN_CHAT_ID and ADMIN_CHAT_ID != 0:
+    try:
+        admin_items = "\n".join([
+            f"• {item['name']} ({item['variant']}) — {item['price']}₽ × {item['qty']}"
+            for item in cart
+        ])
+
+        admin_msg = (
+            "📦 <b>Новый заказ!</b>\n\n"
+            f"👤 Покупатель: @{msg.from_user.username or '—'} ({user_id})\n"
+            f"Способ: <b>{method_human}</b>\n"
+            f"Адрес: {address}\n"
+            f"Телефон: {phone}\n\n"
+            f"🛍 <b>Состав:</b>\n{admin_items}\n\n"
+            f"💰 <b>Итого: {total}₽</b>"
+        )
+
+        await msg.bot.send_message(ADMIN_CHAT_ID, admin_msg)
+
+    except Exception as e:
+        print(f"[ADMIN_NOTIFY] Ошибка отправки администратору: {e}")
+else:
+    print("[ADMIN_NOTIFY] ADMIN_CHAT_ID отсутствует или = 0")
+
+    
     # ============================
     #   СПИСАНИЕ STOCK
     # ============================
