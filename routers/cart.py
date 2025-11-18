@@ -73,18 +73,17 @@ def build_cart_keyboard(uid: int):
 
 @cart_router.callback_query(lambda c: c.data.startswith("addcart:"))
 async def add_to_cart(callback: CallbackQuery):
-    uid = callback.from_user.id
+    user_id = callback.from_user.id
     _, parent_id, child_id = callback.data.split(":")
 
-    # Подгружаем товары
     from google_sheets import load_products_safe
     products = load_products_safe()
 
     child = next((x for x in products if x["id"] == child_id), None)
     if not child:
-        return await callback.answer("Ошибка: товар не найден", show_alert=True)
+        return await callback.answer("Вариация не найдена", show_alert=True)
 
-    user_cart = CART.setdefault(uid, [])
+    user_cart = CART.setdefault(user_id, [])
     existing = next((x for x in user_cart if x["child_id"] == child_id), None)
 
     if existing:
@@ -98,16 +97,15 @@ async def add_to_cart(callback: CallbackQuery):
             "qty": 1
         })
 
-    # Показать кнопку "Корзина"
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🛒 Корзина", callback_data="cart_open")]
+            [InlineKeyboardButton(text="🛒 Корзина", callback_data="cart_open")],
+            [InlineKeyboardButton(text="🛍 Каталог", callback_data="catalog_back")]
         ]
     )
 
-    # ⚠️ редактируем текущее сообщение, чтобы не создавать новое
-    await callback.message.edit_reply_markup(reply_markup=kb)
-    await callback.answer("✔ Добавлено в корзину")
+    await callback.message.answer("✔ Добавлено в корзину", reply_markup=kb)
+    await callback.answer()
 
 
 # ============================================================
