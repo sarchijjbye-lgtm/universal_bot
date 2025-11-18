@@ -12,81 +12,120 @@ async def load_products_fresh():
     return load_products_safe()
 
 
-def get_parents(products):
-    return [p for p in products if p["parent_id"] is None]
+# ===== Helpers =====
+
+def is_parent(p: dict) -> bool:
+    return p["parent_id"] == ""  # parent_id пустая строка = parent row
 
 
 def get_children(products, parent_id):
-    return [p for p in products if p["parent_id"] == parent_id and p["price"] > 0]
+    return [
+        p for p in products
+        if p["parent_id"] == parent_id and p["price"] > 0
+    ]
 
+
+# ===== Show catalog =====
 
 @catalog_router.message(lambda m: m.text in ["🛍 Каталог", "🛍️ Каталог"])
-async def show_catalog(message: types.Message):
-
+async def show_catalog(msg: types.Message):
     products = await load_products_fresh()
-    categories = sorted({p["category"] for p in products if p["parent_id"] is None})
+
+    categories = sorted({
+        p["category"] for p in products
+        if is_parent(p)
+    })
+
+    if not categories:
+        return await msg.answer("Категории не найдены.")
 
     kb = InlineKeyboardBuilder()
     for c in categories:
         kb.button(text=c, callback_data=f"cat:{c}")
-
     kb.adjust(1)
-    await message.answer("Выберите категорию:", reply_markup=kb.as_markup())
 
+    await msg.answer("Выберите категорию:", reply_markup=kb.as_markup())
+
+
+# ===== Show items in category =====
 
 @catalog_router.callback_query(lambda c: c.data.startswith("cat:"))
-async def show_category(callback: types.CallbackQuery):
+async def show_category(cb: types.CallbackQuery):
+    _, category = cb.data.split(":", 1)
 
-    _, category = callback.data.split(":", 1)
     products = await load_products_fresh()
+    parents = [
+        p for p in products
+        if is_parent(p) and p["category"] == category
+    ]
 
-    parents = [p for p in products if p["category"] == category and p["parent_id"] is None]
+    if not parents:
+        return await cb.answer("Пока нет товаров", show_alert=True)
 
     kb = InlineKeyboardBuilder()
     for p in parents:
         kb.button(text=p["name"], callback_data=f"prod:{p['id']}")
-
     kb.adjust(1)
-    await callback.message.edit_text(f"<b>{category}</b>\nВыберите товар:", reply_markup=kb.as_markup())
-    await callback.answer()
 
+    await cb.message.edit_text(
+        f"<b>{category}</b>\nВыберите товар:",
+        reply_markup=kb.as_markup()
+    )
+    await cb.answer()
+
+
+# ===== Product card =====
 
 @catalog_router.callback_query(lambda c: c.data.startswith("prod:"))
-async def product_card(callback: types.CallbackQuery):
+async def product_card(cb: types.CallbackQuery):
+    _, parent_id = cb.data.split(":", 1)
 
-    _, parent_id = callback.data.split(":", 1)
     products = await load_products_fresh()
 
     parent = next((x for x in products if x["id"] == parent_id), None)
-    children = get_children(products, parent_id)
-
     if not parent:
-        return await callback.answer("Товар не найден", show_alert=True)
+        return await cb.answer("Товар не найден", show_alert=True)
+
+    children = get_children(products, parent_id)
 
     caption = (
         f"<b>{parent['name']}</b>\n"
         f"{parent['description']}\n"
-        f"\n👇 Выберите вариант:"
     )
 
-    # PHOTO
+    # ---- show photo ----
     if parent["file_id"]:
-        await callback.message.answer_photo(parent["file_id"], caption)
+        await cb.message.answer_photo(parent["file_id"], caption)
     elif parent["photo_url"]:
-        msg = await callback.message.answer_photo(parent["photo_url"], caption)
+        msg = await cb.message.answer_photo(parent["photo_url"], caption)
         try:
             parent["file_id"] = msg.photo[-1].file_id
         except:
             pass
     else:
-        await callback.message.answer(caption)
+        await cb.message.answer(caption)
 
+    # ===== Variants =====
     kb = InlineKeyboardBuilder()
+
+    # case A: товар БЕЗ вариаций
+    if not children:
+        kb.button(
+            text=f"Добавить — {parent['price']}₽",
+            callback_data=f"addcart:{parent_id}:{parent_id}"
+        )
+        kb.adjust(1)
+        await cb.message.answer("Добавить в корзину:", reply_markup=kb.as_markup())
+        return await cb.answer()
+
+    # case B: обычные вариации
     for v in children:
-        label = v["variant_label"] or "Вариант"
-        kb.button(text=f"{label} — {v['price']}₽", callback_data=f"addcart:{parent_id}:{v['id']}")
+        name = v["variant_label"] or "Вариант"
+        kb.button(
+            text=f"{name} — {v['price']}₽",
+            callback_data=f"addcart:{parent_id}:{v['id']}"
+        )
 
     kb.adjust(1)
-
-    await callback.message.answer("Выберите вариант:", reply_markup=kb.as_markup())
-    await callback.answer()
+    await cb.message.answer("Выберите вариант:", reply_markup=kb.as_markup())
+    await cb.answer()
