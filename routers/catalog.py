@@ -8,105 +8,85 @@ from google_sheets import load_products_safe
 catalog_router = Router()
 
 
-# === Load fresh products every time ===
 async def load_products_fresh():
     return load_products_safe()
 
 
-# === Show categories ===
+def get_parents(products):
+    return [p for p in products if p["parent_id"] is None]
+
+
+def get_children(products, parent_id):
+    return [p for p in products if p["parent_id"] == parent_id and p["price"] > 0]
+
+
 @catalog_router.message(lambda m: m.text in ["🛍 Каталог", "🛍️ Каталог"])
 async def show_catalog(message: types.Message):
-    products = await load_products_fresh()
 
-    categories = sorted({p["category"] for p in products})
+    products = await load_products_fresh()
+    categories = sorted({p["category"] for p in products if p["parent_id"] is None})
 
     kb = InlineKeyboardBuilder()
     for c in categories:
         kb.button(text=c, callback_data=f"cat:{c}")
-    kb.adjust(1)
 
+    kb.adjust(1)
     await message.answer("Выберите категорию:", reply_markup=kb.as_markup())
 
 
-# === Show items in category ===
 @catalog_router.callback_query(lambda c: c.data.startswith("cat:"))
 async def show_category(callback: types.CallbackQuery):
-    _, category = callback.data.split(":", 1)
 
+    _, category = callback.data.split(":", 1)
     products = await load_products_fresh()
-    items = [p for p in products if p["category"] == category]
+
+    parents = [p for p in products if p["category"] == category and p["parent_id"] is None]
 
     kb = InlineKeyboardBuilder()
-    for p in items:
+    for p in parents:
         kb.button(text=p["name"], callback_data=f"prod:{p['id']}")
-    kb.adjust(1)
 
-    await callback.message.edit_text(
-        f"Категория: <b>{category}</b>\nВыберите товар:",
-        reply_markup=kb.as_markup()
-    )
+    kb.adjust(1)
+    await callback.message.edit_text(f"<b>{category}</b>\nВыберите товар:", reply_markup=kb.as_markup())
     await callback.answer()
 
 
-# === Product card ===
 @catalog_router.callback_query(lambda c: c.data.startswith("prod:"))
 async def product_card(callback: types.CallbackQuery):
-    _, product_id = callback.data.split(":", 1)
 
+    _, parent_id = callback.data.split(":", 1)
     products = await load_products_fresh()
-    p = next((x for x in products if str(x["id"]) == product_id), None)
 
-    if not p:
-        return await callback.answer("Ошибка: товар не найден", show_alert=True)
+    parent = next((x for x in products if x["id"] == parent_id), None)
+    children = get_children(products, parent_id)
 
-    # STOCK / SUPPLIER TEXT
-    stock_text = f"\nВ наличии: {p['stock']} шт." if p.get("stock") not in (None, "") else ""
-    supplier_text = f"\nПоставщик: {p['supplier']}" if p.get("supplier") else ""
+    if not parent:
+        return await callback.answer("Товар не найден", show_alert=True)
 
     caption = (
-        f"<b>{p['name']}</b>\n"
-        f"{p['description']}\n"
-        f"{stock_text}"
-        f"{supplier_text}\n\n"
-        f"👇 Выберите вариант:"
+        f"<b>{parent['name']}</b>\n"
+        f"{parent['description']}\n"
+        f"\n👇 Выберите вариант:"
     )
 
-    # ==== Show photo ====
-    if p.get("file_id"):
-        await callback.message.answer_photo(
-            p["file_id"],
-            caption=caption,
-            reply_markup=_variants_keyboard(p)
-        )
-    elif p.get("photo_url") and p["photo_url"].startswith("http"):
-        msg = await callback.message.answer_photo(
-            p["photo_url"],
-            caption=caption,
-            reply_markup=_variants_keyboard(p)
-        )
-        # Cache Telegram file_id
+    # PHOTO
+    if parent["file_id"]:
+        await callback.message.answer_photo(parent["file_id"], caption)
+    elif parent["photo_url"]:
+        msg = await callback.message.answer_photo(parent["photo_url"], caption)
         try:
-            p["file_id"] = msg.photo[-1].file_id
+            parent["file_id"] = msg.photo[-1].file_id
         except:
             pass
     else:
-        await callback.message.answer(
-            caption,
-            reply_markup=_variants_keyboard(p)
-        )
+        await callback.message.answer(caption)
 
-    await callback.answer()
-
-
-# === Variants buttons ===
-def _variants_keyboard(product):
     kb = InlineKeyboardBuilder()
-
-    for v in product["variants"]:
-        kb.button(
-            text=f"{v['label']} — {v['price']}₽",
-            callback_data=f"addcart:{product['id']}:{v['id']}"
-        )
+    for v in children:
+        label = v["variant_label"] or "Вариант"
+        kb.button(text=f"{label} — {v['price']}₽", callback_data=f"addcart:{parent_id}:{v['id']}")
 
     kb.adjust(1)
-    return kb.as_markup()
+
+    await callback.message.answer("Выберите вариант:", reply_markup=kb.as_markup())
+    await callback.answer()
