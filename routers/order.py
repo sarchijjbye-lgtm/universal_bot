@@ -141,6 +141,10 @@ async def checkout_contact(msg: Message, stage, set_stage):
 
     phone = msg.contact.phone_number
 
+    # ============================
+    #   TEXT FOR GSHEETS
+    # ============================
+
     if cart:
         items_lines = [
             f"• {item['name']} ({item['variant']}) — {item['price']}₽ × {item['qty']} = {item['price'] * item['qty']}₽"
@@ -151,7 +155,7 @@ async def checkout_contact(msg: Message, stage, set_stage):
         items_text = "— корзина пуста (ошибка?)"
 
     # ============================
-    #   ЗАПИСЬ В GOOGLE SHEETS
+    #   WRITE TO GOOGLE SHEETS
     # ============================
 
     try:
@@ -170,37 +174,34 @@ async def checkout_contact(msg: Message, stage, set_stage):
     except Exception as e:
         print(f"[ORDERS] Ошибка записи в Google Sheets: {e}")
 
-# ============================
-#  УВЕДОМЛЕНИЕ АДМИНУ О ЗАКАЗЕ
-# ============================
-
-if ADMIN_CHAT_ID and ADMIN_CHAT_ID != 0:
-    try:
-        admin_items = "\n".join([
-            f"• {item['name']} ({item['variant']}) — {item['price']}₽ × {item['qty']}"
-            for item in cart
-        ])
-
-        admin_msg = (
-            "📦 <b>Новый заказ!</b>\n\n"
-            f"👤 Покупатель: @{msg.from_user.username or '—'} ({user_id})\n"
-            f"Способ: <b>{method_human}</b>\n"
-            f"Адрес: {address}\n"
-            f"Телефон: {phone}\n\n"
-            f"🛍 <b>Состав:</b>\n{admin_items}\n\n"
-            f"💰 <b>Итого: {total}₽</b>"
-        )
-
-        await msg.bot.send_message(ADMIN_CHAT_ID, admin_msg)
-
-    except Exception as e:
-        print(f"[ADMIN_NOTIFY] Ошибка отправки администратору: {e}")
-else:
-    print("[ADMIN_NOTIFY] ADMIN_CHAT_ID отсутствует или = 0")
-
-    
     # ============================
-    #   СПИСАНИЕ STOCK
+    #   ADMIN NOTIFY (CORRECT)
+    # ============================
+
+    if ADMIN_CHAT_ID:
+        try:
+            admin_items = "\n".join([
+                f"• {item['name']} ({item['variant']}) — {item['price']}₽ × {item['qty']}"
+                for item in cart
+            ])
+
+            admin_msg = (
+                "📦 <b>Новый заказ!</b>\n\n"
+                f"👤 Покупатель: @{msg.from_user.username or '—'} ({user_id})\n"
+                f"Способ: <b>{method_human}</b>\n"
+                f"Адрес: {address}\n"
+                f"Телефон: {phone}\n\n"
+                f"🛍 <b>Состав:</b>\n{admin_items}\n\n"
+                f"💰 <b>Итого: {total}₽</b>"
+            )
+
+            await msg.bot.send_message(ADMIN_CHAT_ID, admin_msg)
+
+        except Exception as e:
+            print(f"[ADMIN_NOTIFY] Ошибка отправки администратору: {e}")
+
+    # ============================
+    #   UPDATE STOCK
     # ============================
 
     products = load_products_safe()
@@ -216,38 +217,26 @@ else:
         old_stock = product["stock"]
 
         if old_stock is None:
-            continue  # товар без контроля стока
+            continue
 
-        new_stock = old_stock - qty
-        if new_stock < 0:
-            new_stock = 0
+        new_stock = max(old_stock - qty, 0)
+        update_stock(child_id, new_stock)
 
-        updated = update_stock(child_id, new_stock)
-
-        # ============================
-        #   УВЕДОМЛЕНИЕ АДМИНУ
-        # ============================
-
+        # low / zero stock notify
         if ADMIN_CHAT_ID:
-
-            # закончилось
             if new_stock == 0:
                 await msg.bot.send_message(
                     ADMIN_CHAT_ID,
-                    f"❗ Товар <b>{product['name']} {product['variant_label']}</b> закончился (stock = 0).\n"
-                    f"active → FALSE"
+                    f"❗ Товар <b>{product['name']} {product['variant_label']}</b> закончился (stock = 0)."
                 )
-
-            # мало товара
             elif new_stock <= 3:
                 await msg.bot.send_message(
                     ADMIN_CHAT_ID,
-                    f"⚠️ Товар <b>{product['name']} {product['variant_label']}</b> заканчивается.\n"
-                    f"Осталось: {new_stock} шт."
+                    f"⚠️ Товар <b>{product['name']} {product['variant_label']}</b> заканчивается.\nОсталось: {new_stock} шт."
                 )
 
     # ============================
-    #   СООБЩЕНИЕ ПОКУПАТЕЛЮ
+    #   USER MESSAGE
     # ============================
 
     user_text = (
