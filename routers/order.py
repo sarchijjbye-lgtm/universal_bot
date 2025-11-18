@@ -12,25 +12,21 @@ from datetime import datetime
 import os
 
 from routers.cart import get_cart, calc_total, clear_cart
+from google_sheets import connect_to_sheet, update_stock, load_products_safe
 from settings import get_setting
-from google_sheets import connect_to_sheet
 
 order_router = Router()
 
-# временное хранилище по пользователям
-METHOD_STORAGE = {}   # user_id -> "pickup" | "delivery"
-ADDRESS_STORAGE = {}  # user_id -> текст адреса
+METHOD_STORAGE = {}
+ADDRESS_STORAGE = {}
+
+ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 
 
-def normalize(text: str | None) -> str:
+def normalize(text: str | None):
     if not text:
         return ""
-    return (
-        text.replace("🏪", "")
-            .replace("🚚", "")
-            .replace(" ", "")
-            .lower()
-    )
+    return text.replace("🏪", "").replace("🚚", "").replace(" ", "").lower()
 
 
 # ============================
@@ -50,10 +46,7 @@ async def checkout_start(callback: CallbackQuery, set_stage):
         resize_keyboard=True
     )
 
-    await callback.message.answer(
-        "Выберите способ получения:",
-        reply_markup=kb
-    )
+    await callback.message.answer("Выберите способ получения:", reply_markup=kb)
     await callback.answer()
 
 
@@ -70,7 +63,6 @@ async def checkout_method(msg: Message, stage, set_stage):
     user_id = msg.from_user.id
     choice = normalize(msg.text)
 
-    # ---- Самовывоз ----
     if choice == "самовывоз":
         METHOD_STORAGE[user_id] = "pickup"
         address = get_setting("pickup_address")
@@ -85,20 +77,19 @@ async def checkout_method(msg: Message, stage, set_stage):
         await set_stage("contact")
         return
 
-    # ---- Доставка ----
     if choice == "доставка":
         METHOD_STORAGE[user_id] = "delivery"
 
         await msg.answer(
             "Введите адрес доставки:",
-            reply_markup=ReplyKeyboardRemove()  # убираем клавиатуру с вариантами
+            reply_markup=ReplyKeyboardRemove()
         )
         await set_stage("address")
         return
 
 
 # ============================
-#   ADDRESS INPUT (TEXT)
+#   ADDRESS INPUT
 # ============================
 
 @order_router.message(lambda m: m.text and len(m.text) > 3)
@@ -117,7 +108,6 @@ async def checkout_address_text(msg: Message, stage, set_stage):
             resize_keyboard=True
         )
     )
-
     await set_stage("contact")
 
 
@@ -135,14 +125,13 @@ async def checkout_contact(msg: Message, stage, set_stage):
     cart = get_cart(user_id)
     total = calc_total(user_id)
 
-    # --- данные из settings ---
     store_name = get_setting("store_name", "Наш магазин")
     finish_text = get_setting("after_order_message", "Спасибо за заказ!")
     pickup_address = get_setting("pickup_address", "")
     orders_sheet_name = get_setting("orders_sheet", "Orders")
 
-    # --- способ получения + адрес ---
     method_raw = METHOD_STORAGE.get(user_id, "delivery")
+
     if method_raw == "pickup":
         method_human = "Самовывоз"
         address = pickup_address or "Самовывоз"
@@ -152,7 +141,6 @@ async def checkout_contact(msg: Message, stage, set_stage):
 
     phone = msg.contact.phone_number
 
-    # --- красивый список товаров ---
     if cart:
         items_lines = [
             f"• {item['name']} ({item['variant']}) — {item['price']}₽ × {item['qty']} = {item['price'] * item['qty']}₽"
@@ -180,33 +168,54 @@ async def checkout_contact(msg: Message, stage, set_stage):
             total
         ])
     except Exception as e:
-        # просто логируем в консоль, чтобы не ломать UX
         print(f"[ORDERS] Ошибка записи в Google Sheets: {e}")
 
     # ============================
-    #   УВЕДОМЛЕНИЕ АДМИНУ
+    #   СПИСАНИЕ STOCK
     # ============================
 
-    try:
-        admin_from_settings = get_setting("admin_chat_id", "")
-        admin_id = admin_from_settings or os.getenv("ADMIN_CHAT_ID", "")
-        if admin_id:
-            admin_id = int(admin_id)
+    products = load_products_safe()
 
-            admin_text = (
-                "📦 <b>Новый заказ</b>\n\n"
-                f"👤 Пользователь: <b>{msg.from_user.first_name}</b> "
-                f"(id: <code>{user_id}</code>, @{msg.from_user.username})\n"
-                f"📞 Телефон: <b>{phone}</b>\n"
-                f"🚚 Способ получения: <b>{method_human}</b>\n"
-                f"📍 Адрес: <b>{address}</b>\n\n"
-                f"🧾 <b>Состав заказа:</b>\n{items_text}\n\n"
-                f"💰 <b>Сумма: {total}₽</b>"
-            )
+    for item in cart:
+        child_id = item["child_id"]
+        qty = item["qty"]
 
-            await msg.bot.send_message(admin_id, admin_text)
-    except Exception as e:
-        print(f"[ORDERS] Ошибка отправки админу: {e}")
+        product = next((x for x in products if x["id"] == child_id), None)
+        if not product:
+            continue
+
+        old_stock = product["stock"]
+
+        if old_stock is None:
+            continue  # товар без контроля стока
+
+        new_stock = old_stock - qty
+        if new_stock < 0:
+            new_stock = 0
+
+        updated = update_stock(child_id, new_stock)
+
+        # ============================
+        #   УВЕДОМЛЕНИЕ АДМИНУ
+        # ============================
+
+        if ADMIN_CHAT_ID:
+
+            # закончилось
+            if new_stock == 0:
+                await msg.bot.send_message(
+                    ADMIN_CHAT_ID,
+                    f"❗ Товар <b>{product['name']} {product['variant_label']}</b> закончился (stock = 0).\n"
+                    f"active → FALSE"
+                )
+
+            # мало товара
+            elif new_stock <= 3:
+                await msg.bot.send_message(
+                    ADMIN_CHAT_ID,
+                    f"⚠️ Товар <b>{product['name']} {product['variant_label']}</b> заканчивается.\n"
+                    f"Осталось: {new_stock} шт."
+                )
 
     # ============================
     #   СООБЩЕНИЕ ПОКУПАТЕЛЮ
@@ -225,7 +234,6 @@ async def checkout_contact(msg: Message, stage, set_stage):
 
     await msg.answer(user_text, reply_markup=ReplyKeyboardRemove())
 
-    # очистка состояния
     clear_cart(user_id)
     METHOD_STORAGE.pop(user_id, None)
     ADDRESS_STORAGE.pop(user_id, None)
