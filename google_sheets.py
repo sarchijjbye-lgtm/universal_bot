@@ -10,11 +10,10 @@ GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 
 if not GOOGLE_SHEET_CREDENTIALS:
     raise Exception("ENV GOOGLE_SHEET_CREDENTIALS missing!")
-
 if not GOOGLE_SHEET_ID:
     raise Exception("ENV GOOGLE_SHEET_ID missing!")
 
-# Обработка JSON ключей
+# credentials
 creds_dict = json.loads(GOOGLE_SHEET_CREDENTIALS)
 
 scope = [
@@ -27,7 +26,7 @@ client = gspread.authorize(credentials)
 
 
 # ============================================================
-#  UNIVERSAL CONNECTION
+#  SHEET CONNECTION
 # ============================================================
 
 def connect_to_sheet(sheet_name: str):
@@ -40,27 +39,21 @@ def connect_to_sheet(sheet_name: str):
 # ============================================================
 
 def find_row_by_id(ws, product_id: str):
-    """
-    Возвращает индекс строки (1-based) по колонке id.
-    Возвращает None, если не найдено.
-    """
-    ids = ws.col_values(1)  # колонка A - id
-    for i, value in enumerate(ids, start=1):
-        if value.strip() == str(product_id).strip():
+    ids = ws.col_values(1)  # column A
+    for i, v in enumerate(ids, start=1):
+        if v.strip() == str(product_id).strip():
             return i
     return None
 
 
 # ============================================================
-#  LOAD PRODUCTS (parent + child items)
+#  LOAD PRODUCTS
 # ============================================================
 
 def load_products_safe():
     """
-    Загружает ВСЕ товары (parent + child).
-    Ряды должны содержать колонки:
-
-    id | parent_id | category | name | variant_label | price | description | our_price | supplier | stock | photo_url | file_id | active
+    Loads ALL rows. Parent = rows with parent_id == "".
+    Children = parent_id != "" and price > 0.
     """
 
     ws = connect_to_sheet("Products")
@@ -68,12 +61,13 @@ def load_products_safe():
 
     products = []
 
-    for row in rows:
-        active_raw = str(row.get("active", "")).strip().lower()
+    for r in rows:
+        # active
+        active_raw = str(r.get("active", "")).strip().lower()
         active = active_raw in ("true", "1", "yes")
 
         # stock
-        stock_raw = row.get("stock")
+        stock_raw = r.get("stock")
         if stock_raw in ("", None, " "):
             stock = None
         else:
@@ -83,22 +77,22 @@ def load_products_safe():
                 stock = None
 
         products.append({
-            "id": str(row.get("id", "")).strip(),
-            "parent_id": str(row.get("parent_id", "")).strip(),
-            "category": row.get("category", "").strip(),
-            "name": row.get("name", "").strip(),
-            "variant_label": row.get("variant_label", "").strip(),
-            "price": int(row.get("price") or 0),
-            "description": row.get("description", ""),
-            "our_price": row.get("our_price") or None,
-            "supplier": row.get("supplier", ""),
+            "id": str(r.get("id", "")).strip(),
+            "parent_id": str(r.get("parent_id", "")).strip(),  # <- STRING
+            "category": r.get("category", "").strip(),
+            "name": r.get("name", "").strip(),
+            "variant_label": r.get("variant_label", "").strip(),
+            "price": int(r.get("price") or 0),
+            "description": r.get("description", ""),
+            "our_price": r.get("our_price") or None,
+            "supplier": r.get("supplier", "").strip(),
             "stock": stock,
-            "photo_url": row.get("photo_url", "").strip(),
-            "file_id": row.get("file_id", "").strip(),
+            "photo_url": r.get("photo_url", "").strip(),
+            "file_id": r.get("file_id", "").strip(),
             "active": active
         })
 
-    # Возвращаем только активные child + parent без вариантов
+    # return active only
     return [p for p in products if p["active"]]
 
 
@@ -107,30 +101,17 @@ def load_products_safe():
 # ============================================================
 
 def update_stock(product_id: str, new_stock: int):
-    """
-    Обновляет stock в таблице.
-    Если stock = 0 → active = FALSE.
-    Если stock > 0 → active = TRUE.
-    """
-
     ws = connect_to_sheet("Products")
     row_i = find_row_by_id(ws, product_id)
-
     if not row_i:
-        print(f"[GSHEETS] update_stock: id {product_id} not found")
         return False
 
-    stock_col = 10   # J
-    active_col = 13  # M
+    col_stock = 10   # J
+    col_active = 13  # M
 
-    ws.update_cell(row_i, stock_col, new_stock)
+    ws.update_cell(row_i, col_stock, new_stock)
 
-    # auto active
-    if new_stock == 0:
-        ws.update_cell(row_i, active_col, "FALSE")
-    else:
-        ws.update_cell(row_i, active_col, "TRUE")
-
+    ws.update_cell(row_i, col_active, "TRUE" if new_stock > 0 else "FALSE")
     return True
 
 
@@ -139,16 +120,11 @@ def update_stock(product_id: str, new_stock: int):
 # ============================================================
 
 def update_file_id(product_id: str, file_id: str):
-    """
-    Записывает file_id в продукт (child или parent).
-    """
-
     ws = connect_to_sheet("Products")
     row_i = find_row_by_id(ws, product_id)
-
     if not row_i:
         return False
 
-    file_col = 12  # L
-    ws.update_cell(row_i, file_col, file_id)
+    col_file = 12  # L
+    ws.update_cell(row_i, col_file, file_id)
     return True
