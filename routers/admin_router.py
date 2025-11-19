@@ -1,7 +1,6 @@
 # routers/admin_router.py
 
 from aiogram import Router, types
-from aiogram.filters import Command
 import os
 
 from google_sheets import update_file_id, load_products_safe
@@ -10,181 +9,90 @@ admin_router = Router()
 
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
 
-PHOTO_WAIT = {}   # {admin_id: product_id}
+# Временное хранилище:
+# admin_id → file_id
+PHOTO_BUFFER = {}    # {admin_id: file_id}
+WAIT_ID = {}         # {admin_id: True}
 
 
-# ================================
+# =====================================================
 #   ACCESS CHECK
-# ================================
+# =====================================================
 
-def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_CHAT_ID
+def is_admin(uid: int):
+    return uid == ADMIN_CHAT_ID
 
 
-# ================================
-#   /photo <id>
-# ================================
+# =====================================================
+#   STEP 1 — ADMIN SENDS PHOTO
+# =====================================================
 
-@admin_router.message(Command("photo"))
-async def admin_photo_start(message: types.Message):
+@admin_router.message(lambda m: m.from_user.id == ADMIN_CHAT_ID and m.photo)
+async def admin_photo_received(message: types.Message):
 
-    if not is_admin(message.from_user.id):
-        return await message.answer("❌ У вас нет доступа")
+    file_id = message.photo[-1].file_id
+    admin_id = message.from_user.id
 
-    parts = message.text.strip().split()
-
-    if len(parts) != 2:
-        return await message.answer("⚠️ Использование:\n/photo <id>")
-
-    product_id = parts[1]
-
-    # Проверяем, что товар существует
-    products = load_products_safe()
-    exists = any(p["id"] == product_id for p in products)
-
-    if not exists:
-        return await message.answer(f"❌ Товар с id <b>{product_id}</b> не найден")
-
-    # Сохраняем ожидание
-    PHOTO_WAIT[message.from_user.id] = product_id
+    # сохраняем file_id
+    PHOTO_BUFFER[admin_id] = file_id
+    WAIT_ID[admin_id] = True  # ждём id товара
 
     await message.answer(
-        f"📸 Отправьте фотографию для товара <b>ID {product_id}</b>\n"
-        f"Я сохраню file_id в Google Sheets."
+        "📸 Фото получено.\n"
+        "Теперь отправьте <b>ID товара</b>, чтобы прикрепить фото.\n\n"
+        "Например: <code>17</code>"
     )
 
 
-# ================================
-#   Process photo
-# ================================
+# =====================================================
+#   STEP 2 — ADMIN SENDS PRODUCT ID
+# =====================================================
 
-@admin_router.message(lambda m: m.from_user.id in PHOTO_WAIT and m.photo)
-async def admin_photo_received(message: types.Message):
+@admin_router.message(lambda m: m.from_user.id == ADMIN_CHAT_ID and m.text and m.from_user.id in WAIT_ID)
+async def admin_process_product_id(message: types.Message):
 
     admin_id = message.from_user.id
-    product_id = PHOTO_WAIT.get(admin_id)
 
-    if not product_id:
-        return
+    product_id = message.text.strip()
+    file_id = PHOTO_BUFFER.get(admin_id)
 
-    # Берем самое большое фото
-    file_id = message.photo[-1].file_id
+    if not file_id:
+        return await message.answer("❌ Ошибка: фото не найдено. Отправьте фото заново.")
 
-    # Записываем в Sheets
+    # Проверяем, что товар существует
+    products = load_products_safe()
+    prod = next((p for p in products if p["id"] == product_id), None)
+
+    if not prod:
+        return await message.answer(f"❌ Товар с ID <b>{product_id}</b> не найден.")
+
+    # Пытаемся записать в таблицу
     ok = update_file_id(product_id, file_id)
 
     if ok:
         await message.answer(
-            f"✅ Фото успешно сохранено для товара ID <b>{product_id}</b>\n"
-            f"file_id обновлён в Google Sheets."
+            f"✅ Фото успешно прикреплено к товару:\n"
+            f"<b>{prod['name']}</b>\n"
+            f"ID: <code>{product_id}</code>"
         )
     else:
         await message.answer(
-            f"❌ Ошибка: не удалось обновить Google Sheets для товара ID {product_id}"
+            f"❌ Ошибка обновления Google Sheets для ID {product_id}"
         )
 
-    PHOTO_WAIT.pop(admin_id, None)
+    # очищаем состояние
+    PHOTO_BUFFER.pop(admin_id, None)
+    WAIT_ID.pop(admin_id, None)
 
 
-# ================================
-#   NON-PHOTO HANDLING
-# ================================
+# =====================================================
+#   NOT PHOTO — REMINDER
+# =====================================================
 
-@admin_router.message(lambda m: m.from_user.id in PHOTO_WAIT)
-async def admin_expect_photo(message: types.Message):
-    await message.answer("⚠️ Пожалуйста, отправьте фотографию файл *photo*, не текст.")
-# routers/admin_router.py
-
-from aiogram import Router, types
-from aiogram.filters import Command
-import os
-
-from google_sheets import update_file_id, load_products_safe
-
-admin_router = Router()
-
-ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "0"))
-
-PHOTO_WAIT = {}   # {admin_id: product_id}
-
-
-# ================================
-#   ACCESS CHECK
-# ================================
-
-def is_admin(user_id: int) -> bool:
-    return user_id == ADMIN_CHAT_ID
-
-
-# ================================
-#   /photo <id>
-# ================================
-
-@admin_router.message(Command("photo"))
-async def admin_photo_start(message: types.Message):
-
-    if not is_admin(message.from_user.id):
-        return await message.answer("❌ У вас нет доступа")
-
-    parts = message.text.strip().split()
-
-    if len(parts) != 2:
-        return await message.answer("⚠️ Использование:\n/photo <id>")
-
-    product_id = parts[1]
-
-    # Проверяем, что товар существует
-    products = load_products_safe()
-    exists = any(p["id"] == product_id for p in products)
-
-    if not exists:
-        return await message.answer(f"❌ Товар с id <b>{product_id}</b> не найден")
-
-    # Сохраняем ожидание
-    PHOTO_WAIT[message.from_user.id] = product_id
-
+@admin_router.message(lambda m: m.from_user.id == ADMIN_CHAT_ID and m.from_user.id not in WAIT_ID)
+async def admin_wrong_flow(message: types.Message):
     await message.answer(
-        f"📸 Отправьте фотографию для товара <b>ID {product_id}</b>\n"
-        f"Я сохраню file_id в Google Sheets."
+        "Чтобы прикрепить фото к товару:\n"
+        "1️⃣ Отправьте фото\n"
+        "2️⃣ Затем отправьте ID товара"
     )
-
-
-# ================================
-#   Process photo
-# ================================
-
-@admin_router.message(lambda m: m.from_user.id in PHOTO_WAIT and m.photo)
-async def admin_photo_received(message: types.Message):
-
-    admin_id = message.from_user.id
-    product_id = PHOTO_WAIT.get(admin_id)
-
-    if not product_id:
-        return
-
-    # Берем самое большое фото
-    file_id = message.photo[-1].file_id
-
-    # Записываем в Sheets
-    ok = update_file_id(product_id, file_id)
-
-    if ok:
-        await message.answer(
-            f"✅ Фото успешно сохранено для товара ID <b>{product_id}</b>\n"
-            f"file_id обновлён в Google Sheets."
-        )
-    else:
-        await message.answer(
-            f"❌ Ошибка: не удалось обновить Google Sheets для товара ID {product_id}"
-        )
-
-    PHOTO_WAIT.pop(admin_id, None)
-
-
-# ================================
-#   NON-PHOTO HANDLING
-# ================================
-
-@admin_router.message(lambda m: m.from_user.id in PHOTO_WAIT)
-async def admin_expect_photo(message: types.Message):
-    await message.answer("⚠️ Пожалуйста, отправьте фотографию файл *photo*, не текст.")
