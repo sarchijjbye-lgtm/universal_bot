@@ -2,7 +2,6 @@
 
 from aiogram import Router, types
 from aiogram.filters import CommandStart
-
 from settings import get_setting
 
 start_router = Router()
@@ -11,7 +10,6 @@ start_router = Router()
 @start_router.message(CommandStart())
 async def start(message: types.Message):
 
-    # ——— Берём кастомный текст приветствия из Google Sheets ———
     welcome = get_setting("welcome_message")
 
     if not welcome:
@@ -33,3 +31,14 @@ async def start(message: types.Message):
     )
 
     await message.answer(text, reply_markup=kb)
+
+
+# ——— Универсальный хендлер для «Подбор масла» ———
+@start_router.message(lambda m: m.text and "подбор" in m.text.lower())
+async def route_to_wizard(message: types.Message):
+    """
+    Этот хендлер просто передаёт пользователя дальше в oil_wizard.
+    Нужно, чтобы не зависеть от точного текста кнопки.
+    """
+    from routers.oil_wizard import start_quiz
+    await start_quiz(message, None)
