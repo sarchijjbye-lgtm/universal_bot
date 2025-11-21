@@ -11,13 +11,13 @@ start_router = Router()
 @start_router.message(CommandStart())
 async def start(message: types.Message):
 
-    # ---- Берём кастомный текст из Google Sheets ----
+    # ——— Берём кастомный текст приветствия из Google Sheets ———
     welcome = get_setting("welcome_message")
 
     if not welcome:
         welcome = (
             "Привет! 👋\n"
-            "Это универсальный магазин-бот.\n"
+            "Это магазин-бот натуральных сыродавленных масел.\n"
             "Выберите действие:"
         )
 
@@ -26,6 +26,7 @@ async def start(message: types.Message):
     kb = types.ReplyKeyboardMarkup(
         keyboard=[
             [types.KeyboardButton(text="🛍 Каталог")],
+            [types.KeyboardButton(text="🧬 Подбор масла")],
             [types.KeyboardButton(text="🛒 Корзина")]
         ],
         resize_keyboard=True
