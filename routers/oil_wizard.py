@@ -1,14 +1,13 @@
 # routers/oil_wizard.py
 
 from aiogram import Router, types
-from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from google_sheets import load_products_safe
 
 oil_router = Router()
-
 
 # ===============================================================
 # FSM — состояния
@@ -16,26 +15,25 @@ oil_router = Router()
 class OilWizard(StatesGroup):
     goals = State()
     lifestyle = State()
-    allergies = State()
-    activity = State()
-    age = State()
+    digestion = State()
+    stress = State()
+    sleep = State()
     sex = State()
-    adaptive = State()
-    result = State()
-    chat = State()  # мини-чат AI после результата
+    finish = State()
+    chat = State()
 
 
 # ===============================================================
-# Мультиселект клавиатура
+# Удобная мультиселект-клавиатура
 # ===============================================================
-def multiselect(options: dict, selected: set, with_back=False, back_cb="back"):
+def multiselect(options: dict, selected: set, back_cb=None):
     kb = InlineKeyboardBuilder()
 
     for key, label in options.items():
         prefix = "🟩 " if key in selected else "⬜ "
         kb.button(text=prefix + label, callback_data=f"ms:{key}")
 
-    if with_back:
+    if back_cb:
         kb.button(text="⬅️ Назад", callback_data=back_cb)
 
     kb.button(text="➡️ Готово", callback_data="ms:done")
@@ -44,15 +42,7 @@ def multiselect(options: dict, selected: set, with_back=False, back_cb="back"):
 
 
 # ===============================================================
-# Кнопка «Назад» — отдельный бейк
-# ===============================================================
-def back_btn(cb):
-    # Для удобства
-    return InlineKeyboardBuilder().button(text="⬅️ Назад", callback_data=cb).adjust(1).as_markup()
-
-
-# ===============================================================
-# Старт
+# Старт опроса
 # ===============================================================
 @oil_router.message(lambda m: m.text in ["🧬 Подбор масла", "🧬 Идеальный подбор масла"])
 async def start_quiz(msg: types.Message, state: FSMContext):
@@ -61,18 +51,17 @@ async def start_quiz(msg: types.Message, state: FSMContext):
     await state.update_data(goals=set())
 
     await msg.answer(
-        "🧬 <b>Подбор масла</b>\n\n"
-        "Отвечай на вопросы — я подберу масло как нутрициолог.\nВыбирай несколько вариантов:",
+        "🧬 <b>Индивидуальный подбор масла</b>\n\n"
+        "Я задам несколько вопросов — и подберу масло, как интегративный нутрициолог.\n"
+        "Выберите ваши основные цели:",
         reply_markup=multiselect({
             "energy": "Энергия",
-            "brain": "Память / Фокус",
+            "brain": "Фокус / Память",
             "immunity": "Иммунитет",
             "digestion": "Пищеварение",
-            "skin": "Кожа и волосы",
-            "stress": "Стресс и сон",
-            "weight": "Метаболизм / Вес",
-            "male": "Мужское здоровье",
-            "female": "Женское здоровье",
+            "skin": "Кожа / Волосы",
+            "stress": "Стресс / Спокойствие",
+            "weight": "Вес / Метаболизм",
         }, set())
     )
 
@@ -80,7 +69,7 @@ async def start_quiz(msg: types.Message, state: FSMContext):
 # ===============================================================
 # GOALS
 # ===============================================================
-@oil_router.callback_query(lambda c: c.data.startswith("ms:") and c.message.text.startswith("🧬"))
+@oil_router.callback_query(lambda c: c.data.startswith("ms:") and "цели" not in c.message.text.lower())
 async def q_goals(cb: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     selected = set(data["goals"])
@@ -89,25 +78,26 @@ async def q_goals(cb: types.CallbackQuery, state: FSMContext):
 
     if key == "done":
         if not selected:
-            return await cb.answer("Выберите хотя бы одну цель", show_alert=True)
+            return await cb.answer("Выберите хотя бы одну цель 🙏", show_alert=True)
 
         await state.set_state(OilWizard.lifestyle)
         await state.update_data(lifestyle=set())
 
         await cb.message.edit_text(
-            "🥗 <b>Как питаешься?</b>",
+            "🥗 <b>Как питаешься в целом?</b>\nВыберите несколько:",
             reply_markup=multiselect({
                 "fat": "Много жирного",
                 "sweet": "Сладкое",
                 "fish_low": "Мало рыбы",
                 "veg_low": "Мало овощей",
                 "normal": "Обычное питание",
-                "sport": "Спорт",
-            }, set(), with_back=True, back_cb="back:goals")
+                "sport": "Спорт / ПП",
+            }, set(), back_cb="back:goals")
         )
         return
 
     # toggle
+    selected = set(selected)
     if key in selected:
         selected.remove(key)
     else:
@@ -116,38 +106,31 @@ async def q_goals(cb: types.CallbackQuery, state: FSMContext):
     await state.update_data(goals=selected)
     await cb.message.edit_reply_markup(multiselect({
         "energy": "Энергия",
-        "brain": "Память / Фокус",
+        "brain": "Фокус / Память",
         "immunity": "Иммунитет",
         "digestion": "Пищеварение",
-        "skin": "Кожа и волосы",
-        "stress": "Стресс и сон",
-        "weight": "Метаболизм / Вес",
-        "male": "Мужское здоровье",
-        "female": "Женское здоровье",
+        "skin": "Кожа / Волосы",
+        "stress": "Стресс / Спокойствие",
+        "weight": "Вес / Метаболизм",
     }, selected))
 
 
-# ===============================================================
-# BACK: from LIFESTYLE → GOALS
-# ===============================================================
 @oil_router.callback_query(lambda c: c.data == "back:goals")
-async def back_to_goals(cb: types.CallbackQuery, state: FSMContext):
+async def back_goals(cb, state):
     data = await state.get_data()
     sel = data["goals"]
 
     await state.set_state(OilWizard.goals)
     await cb.message.edit_text(
-        "🧬 <b>Подбор масла</b>",
+        "🧬 <b>Индивидуальный подбор масла</b>\nВыберите ваши цели:",
         reply_markup=multiselect({
             "energy": "Энергия",
-            "brain": "Память / Фокус",
+            "brain": "Фокус / Память",
             "immunity": "Иммунитет",
             "digestion": "Пищеварение",
-            "skin": "Кожа и волосы",
-            "stress": "Стресс и сон",
-            "weight": "Метаболизм / Вес",
-            "male": "Мужское здоровье",
-            "female": "Женское здоровье",
+            "skin": "Кожа / Волосы",
+            "stress": "Стресс / Спокойствие",
+            "weight": "Вес / Метаболизм",
         }, sel)
     )
 
@@ -155,24 +138,24 @@ async def back_to_goals(cb: types.CallbackQuery, state: FSMContext):
 # ===============================================================
 # LIFESTYLE
 # ===============================================================
-@oil_router.callback_query(lambda c: c.data.startswith("ms:") and c.message.text.startswith("🥗"))
-async def q_lifestyle(cb: types.CallbackQuery, state: FSMContext):
+@oil_router.callback_query(lambda c: c.data.startswith("ms:") and "питаешься" in c.message.text.lower())
+async def q_lifestyle(cb, state):
     data = await state.get_data()
     selected = set(data["lifestyle"])
     key = cb.data.split(":")[1]
 
     if key == "done":
-        await state.set_state(OilWizard.allergies)
-        await state.update_data(allergies=set())
-
+        await state.set_state(OilWizard.digestion)
         await cb.message.edit_text(
-            "😌 <b>Есть аллергии или особенности?</b>",
-            reply_markup=multiselect({
-                "nuts": "Аллергия на орехи",
-                "seeds": "На семена",
-                "sensitive": "Чувствительный ЖКТ",
-                "none": "Нет",
-            }, set(), with_back=True, back_cb="back:lifestyle")
+            "🍏 <b>Как работает пищеварение?</b>",
+            reply_markup=InlineKeyboardBuilder(
+                buttons=[
+                    ("👍 Всё хорошо", "dig:ok"),
+                    ("😐 Бывает тяжесть", "dig:mid"),
+                    ("😣 Часто вздутие / дискомфорт", "dig:bad"),
+                    ("⬅️ Назад", "back:lifestyle")
+                ]
+            ).adjust(1).as_markup()
         )
         return
 
@@ -182,23 +165,20 @@ async def q_lifestyle(cb: types.CallbackQuery, state: FSMContext):
         selected.add(key)
 
     await state.update_data(lifestyle=selected)
+
     await cb.message.edit_reply_markup(multiselect({
         "fat": "Много жирного",
         "sweet": "Сладкое",
         "fish_low": "Мало рыбы",
         "veg_low": "Мало овощей",
         "normal": "Обычное питание",
-        "sport": "Спорт",
-    }, selected, with_back=True, back_cb="back:goals"))
+        "sport": "Спорт / ПП",
+    }, selected, back_cb="back:goals"))
 
 
-# ===============================================================
-# BACK lifestyle → goals
-# ===============================================================
 @oil_router.callback_query(lambda c: c.data == "back:lifestyle")
-async def back_to_lifestyle(cb, state):
+async def back_ls(cb, state):
     data = await state.get_data()
-    sel = data["lifestyle"]
 
     await state.set_state(OilWizard.lifestyle)
     await cb.message.edit_text(
@@ -209,194 +189,119 @@ async def back_to_lifestyle(cb, state):
             "fish_low": "Мало рыбы",
             "veg_low": "Мало овощей",
             "normal": "Обычное питание",
-            "sport": "Спорт",
-        }, sel, with_back=True, back_cb="back:goals")
+            "sport": "Спорт / ПП",
+        }, set(data["lifestyle"]), back_cb="back:goals")
     )
 
 
 # ===============================================================
-# ALLERGIES
+# DIGESTION
 # ===============================================================
-@oil_router.callback_query(lambda c: c.data.startswith("ms:") and c.message.text.startswith("😌"))
-async def q_allergies(cb, state):
-    data = await state.get_data()
-    selected = set(data["allergies"])
-    key = cb.data.split(":")[1]
+@oil_router.callback_query(lambda c: c.data.startswith("dig:"))
+async def q_dig(cb, state):
+    await state.update_data(digestion=cb.data.split(":")[1])
+    await state.set_state(OilWizard.stress)
 
-    if key == "done":
-        await state.set_state(OilWizard.activity)
-
-        kb = InlineKeyboardBuilder()
-        kb.button(text="Низкая", callback_data="act:low")
-        kb.button(text="Средняя", callback_data="act:mid")
-        kb.button(text="Высокая", callback_data="act:high")
-        kb.button(text="⬅️ Назад", callback_data="back:allergies")
-        kb.adjust(1)
-
-        await cb.message.edit_text("⚡ <b>Уровень активности:</b>", reply_markup=kb.as_markup())
-        return
-
-    if key in selected:
-        selected.remove(key)
-    else:
-        selected.add(key)
-
-    await state.update_data(allergies=selected)
-
-    await cb.message.edit_reply_markup(multiselect({
-        "nuts": "Аллергия на орехи",
-        "seeds": "На семена",
-        "sensitive": "Чувствительный ЖКТ",
-        "none": "Нет",
-    }, selected, with_back=True, back_cb="back:lifestyle"))
-
-
-@oil_router.callback_query(lambda c: c.data == "back:allergies")
-async def back_to_allergies(cb, state):
-    data = await state.get_data()
-    sel = data["allergies"]
-    await state.set_state(OilWizard.allergies)
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Редко", callback_data="stress:low")
+    kb.button(text="Иногда", callback_data="stress:mid")
+    kb.button(text="Часто", callback_data="stress:high")
+    kb.button(text="⬅️ Назад", callback_data="back:digestion")
+    kb.adjust(1)
 
     await cb.message.edit_text(
-        "😌 <b>Есть аллергии или особенности?</b>",
-        reply_markup=multiselect({
-            "nuts": "Аллергия на орехи",
-            "seeds": "На семена",
-            "sensitive": "Чувствительный ЖКТ",
-            "none": "Нет",
-        }, sel, with_back=True, back_cb="back:lifestyle")
+        "😌 <b>Как часто испытываешь стресс?</b>",
+        reply_markup=kb.as_markup()
     )
 
 
-# ===============================================================
-# ACTIVITY
-# ===============================================================
-@oil_router.callback_query(lambda c: c.data.startswith("act:"))
-async def q_activity(cb, state):
-    await state.update_data(activity=cb.data.split(":")[1])
-    await state.set_state(OilWizard.age)
-
+@oil_router.callback_query(lambda c: c.data == "back:digestion")
+async def back_dig(cb, state):
+    await state.set_state(OilWizard.digestion)
     kb = InlineKeyboardBuilder()
-    kb.button(text="16–25", callback_data="age:16")
-    kb.button(text="26–40", callback_data="age:26")
-    kb.button(text="40–55", callback_data="age:40")
-    kb.button(text="55+", callback_data="age:55")
-    kb.button(text="⬅️ Назад", callback_data="back:activity")
+    kb.button(text="👍 Всё хорошо", callback_data="dig:ok")
+    kb.button(text="😐 Бывает тяжесть", callback_data="dig:mid")
+    kb.button(text="😣 Часто дискомфорт", callback_data="dig:bad")
+    kb.button(text="⬅️ Назад", callback_data="back:lifestyle")
     kb.adjust(1)
 
-    await cb.message.edit_text("🎯 <b>Возраст:</b>", reply_markup=kb.as_markup())
+    await cb.message.edit_text("🍏 <b>Как работает пищеварение?</b>", reply_markup=kb.as_markup())
 
 
-@oil_router.callback_query(lambda c: c.data == "back:activity")
-async def back_to_activity(cb, state):
-    await state.set_state(OilWizard.activity)
+# ===============================================================
+# STRESS
+# ===============================================================
+@oil_router.callback_query(lambda c: c.data.startswith("stress:"))
+async def q_stress(cb, state):
+    await state.update_data(stress=cb.data.split(":")[1])
+    await state.set_state(OilWizard.sleep)
 
     kb = InlineKeyboardBuilder()
-    kb.button(text="Низкая", callback_data="act:low")
-    kb.button(text="Средняя", callback_data="act:mid")
-    kb.button(text="Высокая", callback_data="act:high")
-    kb.button(text="⬅️ Назад", callback_data="back:allergies")
+    kb.button(text="Хороший", callback_data="sleep:good")
+    kb.button(text="Средний", callback_data="sleep:mid")
+    kb.button(text="Плохой", callback_data="sleep:bad")
+    kb.button(text="⬅️ Назад", callback_data="back:stress")
     kb.adjust(1)
 
-    await cb.message.edit_text("⚡ <b>Уровень активности:</b>", reply_markup=kb.as_markup())
+    await cb.message.edit_text("🌙 <b>Как спишь?</b>", reply_markup=kb.as_markup())
+
+
+@oil_router.callback_query(lambda c: c.data == "back:stress")
+async def back_stress(cb, state):
+    await state.set_state(OilWizard.stress)
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Редко", callback_data="stress:low")
+    kb.button(text="Иногда", callback_data="stress:mid")
+    kb.button(text="Часто", callback_data="stress:high")
+    kb.button(text="⬅️ Назад", callback_data="back:digestion")
+    kb.adjust(1)
+
+    await cb.message.edit_text("😌 <b>Как часто испытываешь стресс?</b>", reply_markup=kb.as_markup())
 
 
 # ===============================================================
-# AGE → SEX
+# SLEEP → SEX → RESULT
 # ===============================================================
-@oil_router.callback_query(lambda c: c.data.startswith("age:"))
-async def q_age(cb, state):
-    await state.update_data(age=cb.data.split(":")[1])
+@oil_router.callback_query(lambda c: c.data.startswith("sleep:"))
+async def q_sleep(cb, state):
+    await state.update_data(sleep=cb.data.split(":")[1])
     await state.set_state(OilWizard.sex)
 
     kb = InlineKeyboardBuilder()
     kb.button(text="Мужской", callback_data="sex:m")
     kb.button(text="Женский", callback_data="sex:f")
-    kb.button(text="⬅️ Назад", callback_data="back:age")
+    kb.button(text="⬅️ Назад", callback_data="back:sleep")
     kb.adjust(1)
 
-    await cb.message.edit_text("🧬 <b>Пол:</b>", reply_markup=kb.as_markup())
+    await cb.message.edit_text("🧬 <b>Ваш пол?</b>", reply_markup=kb.as_markup())
 
 
-@oil_router.callback_query(lambda c: c.data == "back:age")
-async def back_to_age(cb, state):
-    await state.set_state(OilWizard.age)
+@oil_router.callback_query(lambda c: c.data == "back:sleep")
+async def back_sleep(cb, state):
+    await state.set_state(OilWizard.sleep)
 
     kb = InlineKeyboardBuilder()
-    kb.button(text="16–25", callback_data="age:16")
-    kb.button(text="26–40", callback_data="age:26")
-    kb.button(text="40–55", callback_data="age:40")
-    kb.button(text="55+", callback_data="age:55")
-    kb.button(text="⬅️ Назад", callback_data="back:activity")
+    kb.button(text="Хороший", callback_data="sleep:good")
+    kb.button(text="Средний", callback_data="sleep:mid")
+    kb.button(text="Плохой", callback_data="sleep:bad")
+    kb.button(text="⬅️ Назад", callback_data="back:stress")
     kb.adjust(1)
 
-    await cb.message.edit_text("🎯 <b>Возраст:</b>", reply_markup=kb.as_markup())
+    await cb.message.edit_text("🌙 <b>Как спишь?</b>", reply_markup=kb.as_markup())
 
 
 # ===============================================================
-# SEX → adaptive or finish
+# SEX → FINISH
 # ===============================================================
 @oil_router.callback_query(lambda c: c.data.startswith("sex:"))
 async def q_sex(cb, state):
     await state.update_data(sex=cb.data.split(":")[1])
-    data = await state.get_data()
-
-    goals = data["goals"]
-
-    if "brain" in goals:
-        await state.set_state(OilWizard.adaptive)
-
-        kb = InlineKeyboardBuilder()
-        kb.button(text="Часто", callback_data="extra:high")
-        kb.button(text="Иногда", callback_data="extra:mid")
-        kb.button(text="Редко", callback_data="extra:low")
-        kb.button(text="⬅️ Назад", callback_data="back:sex")
-        kb.adjust(1)
-
-        await cb.message.edit_text("🧠 <b>Чувствуешь умственную усталость?</b>", reply_markup=kb.as_markup())
-        return
-
-    if "digestion" in goals:
-        await state.set_state(OilWizard.adaptive)
-
-        kb = InlineKeyboardBuilder()
-        kb.button(text="Да", callback_data="extra:yes")
-        kb.button(text="Иногда", callback_data="extra:mid")
-        kb.button(text="Нет", callback_data="extra:no")
-        kb.button(text="⬅️ Назад", callback_data="back:sex")
-        kb.adjust(1)
-
-        await cb.message.edit_text("🍏 <b>Бывает вздутие?</b>", reply_markup=kb.as_markup())
-        return
-
-    # иначе сразу результат
-    await finish_recommendation(cb, state)
-
-
-@oil_router.callback_query(lambda c: c.data == "back:sex")
-async def back_to_sex(cb, state):
-    await state.set_state(OilWizard.sex)
-
-    kb = InlineKeyboardBuilder()
-    kb.button(text="Мужской", callback_data="sex:m")
-    kb.button(text="Женский", callback_data="sex:f")
-    kb.button(text="⬅️ Назад", callback_data="back:age")
-    kb.adjust(1)
-
-    await cb.message.edit_text("🧬 <b>Пол:</b>", reply_markup=kb.as_markup())
-
-
-# ===============================================================
-# ADAPTIVE
-# ===============================================================
-@oil_router.callback_query(lambda c: c.data.startswith("extra:"))
-async def q_adaptive(cb, state):
-    await state.update_data(extra=cb.data.split(":")[1])
     await finish_recommendation(cb, state)
 
 
 # ===============================================================
-# FINISH — ENGINE
+# ENGINE
 # ===============================================================
 async def finish_recommendation(cb, state):
     data = await state.get_data()
@@ -408,39 +313,36 @@ async def finish_recommendation(cb, state):
         "1": 0,  # льняное
         "4": 0,  # тыквенное
         "7": 0,  # грецкое
+        "10": 0, # конопляное
+        "13": 0, # тмин
+        "16": 0, # кокос
+        "19": 0, # подсолнечное
     }
 
-    # логика
-    if "energy" in data["goals"]:
-        score["7"] += 2
-    if "brain" in data["goals"]:
-        score["7"] += 3
-        score["1"] += 1
-    if "immunity" in data["goals"]:
-        score["4"] += 2
-    if "digestion" in data["goals"]:
-        score["4"] += 3
-    if "skin" in data["goals"]:
-        score["1"] += 2
-    if "stress" in data["goals"]:
-        score["7"] += 2
-    if "weight" in data["goals"]:
-        score["1"] += 3
-    if "male" in data["goals"]:
-        score["4"] += 3
+    # Цели
+    goals = data["goals"]
+    if "brain" in goals: score["7"] += 3
+    if "energy" in goals: score["7"] += 2
+    if "stress" in goals: score["10"] += 2; score["7"] += 1
+    if "digestion" in goals: score["4"] += 2; score["13"] += 1
+    if "immunity" in goals: score["13"] += 3; score["10"] += 1
+    if "skin" in goals: score["1"] += 2; score["16"] += 1
+    if "weight" in goals: score["1"] += 3
 
-    # аллергии
-    if "nuts" in data["allergies"]:
-        score["7"] -= 999
-    if "seeds" in data["allergies"]:
-        score["1"] -= 999
-        score["4"] -= 999
+    # ЖКТ
+    dig = data["digestion"]
+    if dig == "bad": score["4"] += 3
+    if dig == "mid": score["10"] += 1
 
-    # adaptive
-    if data.get("extra") == "high":
-        score["7"] += 2
-    if data.get("extra") == "yes":
-        score["4"] += 2
+    # Стресс
+    st = data["stress"]
+    if st == "high": score["13"] += 3
+    if st == "mid": score["10"] += 1
+
+    # Сон
+    sl = data["sleep"]
+    if sl == "bad": score["13"] += 2
+    if sl == "mid": score["10"] += 1
 
     best = max(score, key=score.get)
     parent_id = best
@@ -448,60 +350,68 @@ async def finish_recommendation(cb, state):
     name = next(p["name"] for p in products if p["id"] == parent_id)
 
     explanations = {
-        "1": "Идеально для обмена веществ, кожи и гормонального баланса.",
-        "4": "Лучшее для печени, иммунитета и мужского здоровья.",
-        "7": "Оптимально для мозга, энергии, концентрации и нервной системы.",
+        "1": "Помогает гормональному балансу, коже и метаболизму благодаря высокому уровню Омега-3.",
+        "4": "Поддерживает пищеварение, печень и мягко снижает воспаление.",
+        "7": "Сильно улучшает фокус, память и нервную систему.",
+        "10": "Баланс Ω-3/6 снижает тревожность и стабилизирует настроение.",
+        "13": "Мощный иммуномодулятор для восстановления после стресса и воспалений.",
+        "16": "Отлично для кожи, энергии и мягкой поддержки ЖКТ.",
+        "19": "Мягкое повседневное масло, подходит почти всем.",
     }
 
     kb = InlineKeyboardBuilder()
     kb.button(text="🛒 Выбрать объём", callback_data=f"prod:{parent_id}")
-    kb.button(text="💬 Задать вопрос", callback_data=f"chat:start:{parent_id}")
+    kb.button(text="💬 Консультация", callback_data=f"chat:start:{parent_id}")
     kb.adjust(1)
 
     await cb.message.edit_text(
-        f"🌿 <b>Твоя рекомендация</b>\n\n"
+        f"🌿 <b>Ваше персональное масло</b>\n\n"
         f"<b>{name}</b>\n{explanations[parent_id]}\n\n"
-        f"Что дальше?",
+        f"⬇ Что хотите сделать дальше?",
         reply_markup=kb.as_markup()
     )
 
 
 # ===============================================================
-# MINICHAT — AI CONSULTATION MODE
+# AI CHAT
 # ===============================================================
 @oil_router.callback_query(lambda c: c.data.startswith("chat:start:"))
-async def start_chat(cb, state):
-    parent_id = cb.data.split(":")[2]
+async def chat_start(cb, state):
+    pid = cb.data.split(":")[2]
     await state.set_state(OilWizard.chat)
-    await state.update_data(product_id=parent_id)
+    await state.update_data(pid=pid)
 
     await cb.message.edit_text(
-        "💬 <b>Консультация</b>\n"
-        "Задай вопрос о применении, противопоказаниях или схемах приёма.\n\n"
-        "Напиши сообщение ниже:"
+        "💬 <b>Задайте вопрос</b>\n"
+        "Можете спросить о применении, дозировке, противопоказаниях или сочетании масел."
     )
 
 
 @oil_router.message(OilWizard.chat)
 async def chat_ai(msg, state):
     data = await state.get_data()
-    product_id = data["product_id"]
+    pid = data["pid"]
 
-    # Простая экспертная модель
     NAME_MAP = {
         "1": "Льняное масло",
         "4": "Тыквенное масло",
         "7": "Масло грецкого ореха",
+        "10": "Масло конопляное",
+        "13": "Масло чёрного тмина",
+        "16": "Масло кокосовое",
+        "19": "Масло подсолнечное",
     }
 
+    base = NAME_MAP[pid]
+
     answer = (
-        f"🧬 <b>{NAME_MAP[product_id]}</b>\n\n"
-        "Вот мой совет:\n\n"
-        "• Принимать по 1 ч.л. утром натощак.\n"
-        "• Курс 30 дней.\n"
-        "• Можно добавлять в салаты.\n"
-        "• Не жарить — теряются Омега-жиры.\n\n"
-        "Если хочешь схему под твои цели — уточни вопрос 😉"
+        f"🧬 <b>{base}</b>\n\n"
+        "Рекомендации по применению:\n"
+        "• Принимать по 1 ч.л. утром натощак 30 дней.\n"
+        "• Можно добавлять в салаты и тёплые блюда.\n"
+        "• Не жарить — Омега-жиры разрушаются.\n"
+        "• При чувствительном ЖКТ — начинать с 1/2 ч.л.\n\n"
+        "Задавайте уточняющие вопросы 😊"
     )
 
     await msg.answer(answer)
