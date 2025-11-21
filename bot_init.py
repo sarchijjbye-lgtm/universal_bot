@@ -20,7 +20,13 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode="HTML")
 )
 
-dp = Dispatcher()
+# ============================
+# FSM STORAGE (ВАЖНО!)
+# ============================
+from aiogram.fsm.storage.memory import MemoryStorage
+storage = MemoryStorage()
+
+dp = Dispatcher(storage=storage)
 
 
 # ============================
@@ -37,7 +43,7 @@ dp.message.middleware(AntiFloodMiddleware())
 # обработка ошибок
 dp.update.middleware(ErrorHandlerMiddleware())
 
-# стейджи (FSM-подобный механизм) — для checkout
+# стейджи для checkout (НЕ FSM!)
 dp.message.middleware(StageMiddleware())
 dp.callback_query.middleware(StageMiddleware())
 
@@ -45,7 +51,6 @@ dp.callback_query.middleware(StageMiddleware())
 # ============================
 # ROUTERS
 # ============================
-
 from routers.start import start_router
 from routers.catalog import catalog_router
 from routers.cart import cart_router
