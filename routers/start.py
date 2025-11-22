@@ -2,23 +2,16 @@
 
 from aiogram import Router, types
 from aiogram.filters import CommandStart
-
 from settings import get_setting
 
 start_router = Router()
 
-
 @start_router.message(CommandStart())
 async def start(message: types.Message):
-
-    welcome = get_setting("welcome_message")
-
-    if not welcome:
-        welcome = (
-            "Привет! 👋\n"
-            "Это магазин-бот натуральных сыродавленных масел.\n"
-            "Выберите действие:"
-        )
+    welcome = get_setting("welcome_message") or (
+        "Привет! 👋\n"
+        "Это магазин-бот натуральных сыродавленных масел."
+    )
 
     kb = types.ReplyKeyboardMarkup(
         keyboard=[
