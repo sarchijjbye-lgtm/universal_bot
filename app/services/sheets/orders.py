@@ -1,7 +1,9 @@
 # app/services/sheets/orders.py
 
+from __future__ import annotations
+from typing import List, Dict, Optional
 from datetime import datetime
-from typing import List, Dict, Any
+import uuid
 
 from app.services.sheets.client import GoogleSheetsClient
 from app.core.config import config
@@ -9,88 +11,85 @@ from app.core.config import config
 
 class OrdersService:
     """
-    Сервис для записи заказов в Google Sheets.
-    Таблица обычно имеет вид:
+    Работа с листом заказов.
 
-    timestamp | order_id | user_id | name | phone | address | items_json | total | status
+    Структура листа Orders в Google Sheets:
+
+    A: order_id
+    B: created_at
+    C: user_id
+    D: name
+    E: phone
+    F: method (pickup/delivery)
+    G: address (location / pickup address)
+    H: items_json
+    I: total
     """
+
+    SHEET_NAME = None  # берется из settings sheet
 
     def __init__(self, client: GoogleSheetsClient):
         self.client = client
-        self.sheet_name = config.ORDERS_SHEET or "Orders"
+        self.SHEET_NAME = config.ORDERS_SHEET or "Orders"
 
-    # ---------------------------------------------------------
-    # Генерация ID заказа
-    # ---------------------------------------------------------
-    def generate_order_id(self) -> str:
-        now = datetime.utcnow()
-        return now.strftime("ORD-%Y%m%d-%H%M%S")
+    # ------------------------------------------------------
+    # Генерация ID заказа (UUID короткий)
+    # ------------------------------------------------------
+    def _generate_order_id(self) -> str:
+        return uuid.uuid4().hex[:10].upper()
 
-    # ---------------------------------------------------------
-    # Формирование строки заказа
-    # ---------------------------------------------------------
-    def _build_row(
-        self,
-        order_id: str,
-        user_id: int,
-        name: str,
-        phone: str,
-        address: str,
-        items: List[Dict[str, Any]],
-        total: float,
-    ) -> List[Any]:
-        """
-        items — список вида:
-        [
-            {
-                "product_id": 1,
-                "variant_id": 3,
-                "name": "Масло льняное",
-                "variant": "500 мл",
-                "price": 600,
-                "qty": 1
-            }
-        ]
-        """
-
-        # Превращаем товары в компактную JSON-строку
-        items_repr = "; ".join(
-            f"{item['name']} ({item['variant']}) x{item['qty']} = {item['price']}₽"
-            for item in items
-        )
-
-        row = [
-            datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-            order_id,
-            str(user_id),
-            name,
-            phone,
-            address,
-            items_repr,
-            total,
-            "NEW",  # статус заказа по умолчанию
-        ]
-
-        return row
-
-    # ---------------------------------------------------------
-    # Публичный метод: записать заказ
-    # ---------------------------------------------------------
+    # ------------------------------------------------------
+    # Добавление заказа
+    # ------------------------------------------------------
     def create_order(
         self,
         user_id: int,
         name: str,
         phone: str,
-        address: str,
-        items: List[Dict[str, Any]],
+        method: str,
+        address: Optional[str],
+        items: List[Dict],
         total: float,
     ) -> str:
         """
-        Создаёт заказ в таблице и возвращает order_id.
+        Создает запись в Google Sheets.
+        Возвращает order_id.
         """
 
-        order_id = self.generate_order_id()
-        row = self._build_row(order_id, user_id, name, phone, address, items, total)
+        order_id = self._generate_order_id()
+        created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        self.client.append_row(self.sheet_name, row)
+        # items в JSON-строку
+        items_json = self.client.dumps(items)
+
+        row = [
+            order_id,
+            created_at,
+            str(user_id),
+            name,
+            phone,
+            method,
+            address if address else "",
+            items_json,
+            str(int(total)),
+        ]
+
+        self.client.append_row(self.SHEET_NAME, row)
         return order_id
+
+    # ------------------------------------------------------
+    # Чтение всех заказов (при необходимости)
+    # ------------------------------------------------------
+    def list_orders(self) -> List[Dict]:
+        raw = self.client.read(self.SHEET_NAME)
+        return raw
+
+    # ------------------------------------------------------
+    # Получение одного заказа по ID
+    # ------------------------------------------------------
+    def get_order(self, order_id: str) -> Optional[Dict]:
+        all_orders = self.client.read(self.SHEET_NAME)
+        for row in all_orders:
+            if str(row.get("order_id")) == str(order_id):
+                return row
+        return None

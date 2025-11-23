@@ -1,8 +1,10 @@
+# app/services/sheets/catalog.py
+
+from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 
 from app.services.sheets.client import GoogleSheetsClient
-from app.core.config import config
 
 
 # ==========================================================
@@ -36,32 +38,41 @@ class Product:
 # ==========================================================
 
 class CatalogService:
+    """
+    Читает каталог из Google Sheets → Products.
+
+    Требуемая структура таблицы:
+
+    id | parent_id | name | category | description | variant_label | price | file_id | active
+    """
 
     SHEET_NAME = "Products"
 
     def __init__(self, client: GoogleSheetsClient):
         self.client = client
-        self._cache: Dict[int, Product] = {}   # product_id -> Product
-        self._categories = []                  # список категорий
+        self._cache: Dict[int, Product] = {}
+        self._categories: List[str] = []
 
     # ------------------------------------------------------
-    # Публичный метод: загрузить весь каталог
+    # Загрузка каталога
     # ------------------------------------------------------
     def load(self):
-        raw = self.client.read(self.SHEET_NAME)
-        parents = {}
+        rows = self.client.read(self.SHEET_NAME)
+
+        parents: Dict[int, Dict] = {}
         children = []
 
-        # 1. Разделяем parent и child товары
-        for row in raw:
-            pid = row.get("id")
+        # разделяем parent и variants
+        for row in rows:
+            pid = int(row["id"])
             parent_id = row.get("parent_id")
-            active = bool(row.get("active", True))
 
+            active = row.get("active")
+            active = bool(int(active)) if str(active).isdigit() else True
             if not active:
                 continue
 
-            if not parent_id:  # parent product
+            if not parent_id:  # parent
                 parents[pid] = {
                     "id": pid,
                     "name": row["name"],
@@ -69,18 +80,17 @@ class CatalogService:
                     "description": row.get("description", ""),
                     "file_id": row.get("file_id"),
                     "variants": [],
-                    "active": active,
+                    "active": True,
                 }
-            else:  # variant (child)
+            else:
                 children.append(row)
 
-        # 2. Сопоставляем детей с родителями
+        # привязываем варианты
         for row in children:
-            vid = row["id"]
-            parent_id = row["parent_id"]
+            vid = int(row["id"])
+            parent_id = int(row["parent_id"])
 
-            # если у варианта нет file_id → наследуем от родителя
-            file_id = row.get("file_id") or parents.get(parent_id, {}).get("file_id")
+            inherited_file = row.get("file_id") or parents.get(parent_id, {}).get("file_id")
 
             variant = ProductVariant(
                 id=vid,
@@ -88,14 +98,14 @@ class CatalogService:
                 name=row["name"],
                 variant_label=row.get("variant_label", ""),
                 price=float(row.get("price", 0)),
-                file_id=file_id,
+                file_id=inherited_file,
                 active=True
             )
 
             if parent_id in parents:
                 parents[parent_id]["variants"].append(variant)
 
-        # 3. Превращаем в dataclass Product
+        # формируем dataclasses
         self._cache = {}
         categories = set()
 
@@ -107,18 +117,17 @@ class CatalogService:
                 category=data["category"],
                 file_id=data["file_id"],
                 variants=data["variants"],
-                active=data["active"]
+                active=data["active"],
             )
 
             self._cache[p_id] = product
-            categories.add(data["category"])
+            categories.add(product.category)
 
         self._categories = sorted(categories)
 
     # ------------------------------------------------------
-    # Публичный API для handlers
+    # Public API
     # ------------------------------------------------------
-
     def get_categories(self) -> List[str]:
         return self._categories
 
@@ -133,21 +142,6 @@ class CatalogService:
             for variant in product.variants:
                 if variant.id == variant_id:
                     return variant
-        return None
-
-    def get_variant_id(self, product_id: int, variant_label: str) -> Optional[int]:
-        """
-        Возвращает ID варианта по его label (например '250 мл').
-        Нужно для кнопки add_to_cart:{product_id}:{label}
-        """
-        product = self._cache.get(product_id)
-        if not product:
-            return None
-
-        for v in product.variants:
-            if v.variant_label == variant_label:
-                return v.id
-
         return None
 
     def all_products(self) -> List[Product]:

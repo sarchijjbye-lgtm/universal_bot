@@ -11,7 +11,7 @@ from app.utils.formatting import cart_text, total_text
 
 router = Router()
 
-# Эти сервисы будут внедрены из main.py
+# Внедряется из main.py
 catalog_service: CatalogService = None
 cart_service: CartService = None
 
@@ -21,31 +21,33 @@ cart_service: CartService = None
 # ==========================================================
 @router.callback_query(lambda c: c.data.startswith("variant:"))
 async def add_variant_to_cart(callback: CallbackQuery, state: FSMContext):
-    variant_id = int(callback.data.split("variant:")[1])
+    variant_id = int(callback.data.split(":")[1])
 
     added = await cart_service.add(state, variant_id)
+
     if not added:
         await callback.answer("Ошибка: товар не найден.")
         return
 
-    await callback.answer("Товар добавлен в корзину!", show_alert=False)
+    await callback.answer("Добавлено в корзину 🧺")
 
 
 # ==========================================================
-# Открыть корзину
+# Открыть корзину (через текст)
 # ==========================================================
 @router.message(lambda m: m.text and m.text.lower() in ("корзина", "🧺 корзина"))
-async def open_cart(message: types.Message, state: FSMContext):
+async def open_cart_text(message: types.Message, state: FSMContext):
     items = await cart_service.list(state)
+    text = cart_text(items)
 
     await message.answer(
-        cart_text(items),
+        text,
         reply_markup=cart_kb(items)
     )
 
 
 # ==========================================================
-# Открыть корзину через кнопку
+# Открыть корзину (через кнопку)
 # ==========================================================
 @router.callback_query(lambda c: c.data == "cart")
 async def open_cart_callback(callback: CallbackQuery, state: FSMContext):
@@ -58,18 +60,20 @@ async def open_cart_callback(callback: CallbackQuery, state: FSMContext):
 
 
 # ==========================================================
-# Удаление одного товара (через ❌)
+# Удаление варианта из корзины
 # ==========================================================
 @router.callback_query(lambda c: c.data.startswith("del:"))
 async def delete_item(callback: CallbackQuery, state: FSMContext):
-    variant_id = int(callback.data.split("del:")[1])
+    variant_id = int(callback.data.split(":")[1])
 
     removed = await cart_service.remove(state, variant_id)
+
     if not removed:
-        await callback.answer("Товар не найден в корзине.")
+        await callback.answer("Этот товар уже удалён.")
         return
 
     items = await cart_service.list(state)
+
     await callback.message.edit_text(
         cart_text(items),
         reply_markup=cart_kb(items)
@@ -83,10 +87,11 @@ async def delete_item(callback: CallbackQuery, state: FSMContext):
 async def clear_cart(callback: CallbackQuery, state: FSMContext):
     await cart_service.clear(state)
 
-    items = []
+    text = "<i>Корзина пуста.</i>"
+
     await callback.message.edit_text(
-        cart_text(items),
-        reply_markup=cart_kb(items)
+        text,
+        reply_markup=cart_kb([])
     )
 
 
@@ -102,11 +107,14 @@ async def checkout(callback: CallbackQuery, state: FSMContext):
         await callback.answer("Корзина пуста!")
         return
 
-    await callback.message.edit_text(
-        cart_text(items) + total_text(total) +
-        "\n\nВведите, пожалуйста, ваше <b>имя</b>.",
+    checkout_text = (
+        cart_text(items)
+        + total_text(total)
+        + "\n\nВведите ваше <b>имя</b>."
     )
 
-    # Переходим к следующему шагу — ввод имени
+    await callback.message.edit_text(checkout_text)
+
+    # Переход к следующему шагу FSM
     from app.handlers.order import OrderState
     await state.set_state(OrderState.waiting_for_name)

@@ -1,18 +1,15 @@
 # app/core/webhooks.py
 
-import asyncio
 from fastapi import APIRouter, Request
 from aiogram import Bot, Dispatcher
 from aiogram.types import Update
-
 from app.core.config import config
-from app.core.bot import bot, dp
 
 router = APIRouter()
 
 
 async def register_routers(dp: Dispatcher):
-    """Импорт и подключение всех роутеров проекта."""
+    """Подключение всех handlers."""
     from app.handlers.start import router as start_router
     from app.handlers.catalog import router as catalog_router
     from app.handlers.product import router as product_router
@@ -32,51 +29,33 @@ async def register_routers(dp: Dispatcher):
 
 @router.get("/health")
 async def health():
-    """Проверка работоспособности Render/FastAPI."""
     return {"status": "ok"}
 
 
 @router.post("/webhook")
 async def webhook_handler(request: Request):
-    """Получение апдейтов от Telegram."""
     data = await request.json()
     update = Update(**data)
+
+    from app.core.bot import bot, dp
+
     await dp.feed_update(bot, update)
     return {"ok": True}
 
 
-# ==========================================================
-#  FIXED WEBHOOK SETUP (RENDER + TELEGRAM COMPATIBLE)
-# ==========================================================
 async def setup_webhook(bot: Bot):
     """
-    Устанавливает webhook с задержкой и retry.
-    Render иногда поднимает DNS 5–15 сек.
-    Telegram требует, чтобы хост уже резолвился.
+    Устанавливаем webhook при старте.
     """
+    if not config.BOT_URL:
+        print("[WEBHOOK] BOT_URL отсутствует в .env")
+        return
 
     webhook_url = f"{config.BOT_URL}/webhook"
 
-    # ждём, чтобы DNS Render успел активироваться
-    await asyncio.sleep(3)
+    print(f"[WEBHOOK] Устанавливаю webhook: {webhook_url}")
 
-    try:
-        await bot.set_webhook(
-            url=webhook_url,
-            drop_pending_updates=True
-        )
-        print(f"[WEBHOOK] Set to {webhook_url}")
-        return webhook_url
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(webhook_url)
 
-    except Exception as e:
-        print(f"[WEBHOOK ERROR] {e}, retrying in 5 seconds...")
-        await asyncio.sleep(5)
-
-        # повторная попытка
-        await bot.set_webhook(
-            url=webhook_url,
-            drop_pending_updates=True
-        )
-
-        print(f"[WEBHOOK] Retried and set → {webhook_url}")
-        return webhook_url
+    print("[WEBHOOK] Webhook успешно установлен")

@@ -1,30 +1,39 @@
 # app/middlewares/session.py
 
 from aiogram import BaseMiddleware
+from aiogram.types import Update
 from aiogram.fsm.storage.memory import MemoryStorage
-from typing import Callable, Dict, Any, Awaitable
+from aiogram.fsm.context import FSMContext
 
 
 class SessionMiddleware(BaseMiddleware):
     """
-    Обёртка вокруг MemoryStorage.
-    Aiogram 3.x ХРАНИТ state внутри Dispatcher сам.
-    Мы просто добавляем удобный доступ к FSM в data.
+    FSM middleware для корректного получения/создания состояния пользователя.
+    Работает для всех типов апдейтов: message, callback_query.
     """
 
-    def __init__(self, storage: MemoryStorage = None):
+    def __init__(self, storage: MemoryStorage):
         super().__init__()
-        self.storage = storage or MemoryStorage()
+        self.storage = storage
 
-    async def __call__(
-            self,
-            handler: Callable[[Any, Dict[str, Any]], Awaitable[Any]],
-            event: Any,
-            data: Dict[str, Any]
-    ) -> Any:
+    async def __call__(self, handler, event: Update, data: dict):
+        user_id = None
+        chat_id = None
 
-        # FSM обрабатывается Aiogram автоматически
-        # Мы просто кладём ссылку на storage (если нужно)
-        data["storage"] = self.storage
+        # Определяем контекст (user_id / chat_id)
+        if event.message:
+            user_id = event.message.from_user.id
+            chat_id = event.message.chat.id
+        elif event.callback_query:
+            user_id = event.callback_query.from_user.id
+            chat_id = event.callback_query.message.chat.id
+        else:
+            return await handler(event, data)
+
+        # Создаём объект FSMContext (aiogram 3)
+        data["state"] = FSMContext(
+            storage=self.storage,
+            key=f"{chat_id}:{user_id}"
+        )
 
         return await handler(event, data)

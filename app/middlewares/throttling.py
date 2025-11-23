@@ -7,33 +7,32 @@ from aiogram.types import Update
 
 class ThrottlingMiddleware(BaseMiddleware):
     """
-    Антифлуд. Ограничивает количество запросов от пользователя.
+    Простой антифлуд.
+    Ограничивает частоту запросов от одного пользователя.
     """
 
     def __init__(self, rate_limit: float = 0.5):
         super().__init__()
         self.rate_limit = rate_limit
-        self._last_time = {}
+        self.last_time = {}
 
     async def __call__(self, handler, event: Update, data: dict):
+
         user_id = None
 
-        # Выясняем user_id из разных типов событий
-        if hasattr(event, "from_user") and event.from_user:
-            user_id = event.from_user.id
-        elif isinstance(event, Update):
-            if event.message and event.message.from_user:
-                user_id = event.message.from_user.id
-            elif event.callback_query and event.callback_query.from_user:
-                user_id = event.callback_query.from_user.id
+        if event.message:
+            user_id = event.message.from_user.id
+        elif event.callback_query:
+            user_id = event.callback_query.from_user.id
 
         if user_id:
             now = time.time()
-            last = self._last_time.get(user_id)
+            last = self.last_time.get(user_id, 0)
 
-            if last and now - last < self.rate_limit:
-                return  # просто игнорируем сообщение
+            if now - last < self.rate_limit:
+                # тихо игнорируем
+                return
 
-            self._last_time[user_id] = now
+            self.last_time[user_id] = now
 
         return await handler(event, data)
