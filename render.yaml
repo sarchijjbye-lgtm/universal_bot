@@ -4,8 +4,9 @@ services:
     env: python
     region: frankfurt
     plan: starter
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install --no-cache-dir -r requirements.txt"
     startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
+
     envVars:
       - key: BOT_TOKEN
         sync: false
@@ -14,4 +15,6 @@ services:
       - key: SPREADSHEET_NAME
         sync: false
       - key: GOOGLE_SA_JSON
+        sync: false
+      - key: BOT_URL
         sync: false
