@@ -1,12 +1,12 @@
 # app/core/webhooks.py
 
+import asyncio
 from fastapi import APIRouter, Request
 from aiogram import Bot, Dispatcher
 from aiogram.types import Update
 
 from app.core.config import config
 from app.core.bot import bot, dp
-
 
 router = APIRouter()
 
@@ -45,13 +45,38 @@ async def webhook_handler(request: Request):
     return {"ok": True}
 
 
+# ==========================================================
+#  FIXED WEBHOOK SETUP (RENDER + TELEGRAM COMPATIBLE)
+# ==========================================================
 async def setup_webhook(bot: Bot):
-    """Устанавливает webhook при запуске FastAPI."""
-    webhook_url = f"{config.get('BOT_URL')}/webhook"
+    """
+    Устанавливает webhook с задержкой и retry.
+    Render иногда поднимает DNS 5–15 сек.
+    Telegram требует, чтобы хост уже резолвился.
+    """
 
-    await bot.set_webhook(
-        url=webhook_url,
-        drop_pending_updates=True
-    )
+    webhook_url = f"{config.BOT_URL}/webhook"
 
-    return webhook_url
+    # ждём, чтобы DNS Render успел активироваться
+    await asyncio.sleep(3)
+
+    try:
+        await bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True
+        )
+        print(f"[WEBHOOK] Set to {webhook_url}")
+        return webhook_url
+
+    except Exception as e:
+        print(f"[WEBHOOK ERROR] {e}, retrying in 5 seconds...")
+        await asyncio.sleep(5)
+
+        # повторная попытка
+        await bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True
+        )
+
+        print(f"[WEBHOOK] Retried and set → {webhook_url}")
+        return webhook_url
