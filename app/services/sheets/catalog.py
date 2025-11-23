@@ -1,5 +1,3 @@
-# app/services/sheets/catalog.py
-
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 
@@ -137,6 +135,20 @@ class CatalogService:
                     return variant
         return None
 
+    def get_variant_id(self, product_id: int, variant_label: str) -> Optional[int]:
+        """
+        Возвращает ID варианта по его label (например '250 мл').
+        Нужно для кнопки add_to_cart:{product_id}:{label}
+        """
+        product = self._cache.get(product_id)
+        if not product:
+            return None
+
+        for v in product.variants:
+            if v.variant_label == variant_label:
+                return v.id
+
+        return None
+
     def all_products(self) -> List[Product]:
         return list(self._cache.values())
-
