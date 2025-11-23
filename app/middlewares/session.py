@@ -2,30 +2,29 @@
 
 from aiogram import BaseMiddleware
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import Update
+from typing import Callable, Dict, Any, Awaitable
 
 
 class SessionMiddleware(BaseMiddleware):
     """
-    FSM-хранилище в памяти.
+    Обёртка вокруг MemoryStorage.
+    Aiogram 3.x ХРАНИТ state внутри Dispatcher сам.
+    Мы просто добавляем удобный доступ к FSM в data.
     """
 
-    storage = MemoryStorage()
+    def __init__(self, storage: MemoryStorage = None):
+        super().__init__()
+        self.storage = storage or MemoryStorage()
 
-    async def __call__(self, handler, event: Update, data: dict):
-        user_id = None
-        chat_id = None
+    async def __call__(
+            self,
+            handler: Callable[[Any, Dict[str, Any]], Awaitable[Any]],
+            event: Any,
+            data: Dict[str, Any]
+    ) -> Any:
 
-        if hasattr(event, "from_user") and event.from_user:
-            user_id = event.from_user.id
-
-        if hasattr(event, "chat") and event.chat:
-            chat_id = event.chat.id
-
-        data["state"] = self.storage.create_context(
-            bot=data["bot"],
-            user_id=user_id,
-            chat_id=chat_id,
-        )
+        # FSM обрабатывается Aiogram автоматически
+        # Мы просто кладём ссылку на storage (если нужно)
+        data["storage"] = self.storage
 
         return await handler(event, data)
