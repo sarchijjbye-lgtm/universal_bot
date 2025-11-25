@@ -1,97 +1,629 @@
-# main.py
-
+import os
 import asyncio
-from fastapi import FastAPI
+import threading
+import datetime
+from flask import Flask, request
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import (
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton
+)
 
-from app.core.bot import bot, dp
-from app.core.config import config
-from app.core.middleware import setup_middlewares
-from app.core.webhooks import router as webhook_router
-from app.core.webhooks import setup_webhook, register_routers
+from google_sheets import (
+    connect_to_sheet, add_order, get_orders, 
+    load_products, update_product_photo
+)
+from config import BOT_TOKEN, ADMIN_CHAT_ID, GROUP_CHAT_ID
 
-# === Google Sheets Services ===
-from app.services.sheets.client import GoogleSheetsClient
-from app.services.sheets.settings import SettingsService
-from app.services.sheets.catalog import CatalogService
-from app.services.sheets.orders import OrdersService
+# === Инициализация ===
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(bot)
+app = Flask(__name__)
 
-# === Internal App Services ===
-from app.services.cart import CartService
-from app.services.photos import PhotoManager
+BOT_URL = os.getenv("BOT_URL", "https://hion-shop-bot.onrender.com")
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
+WEBHOOK_URL = f"{BOT_URL}{WEBHOOK_PATH}"
 
-# === Handlers (DI injection) ===
-from app.handlers import start, catalog, product, cart, order
-from app.handlers.admin import panel, photo_upload
+# Главное меню
+main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
+main_menu.add(
+    KeyboardButton("🌿 Каталог"),
+    KeyboardButton("🧩 Подбор масла"),
+    KeyboardButton("🛒 Корзина")
+)
 
+# Данные
+user_carts = {}
+pending_address = {}
+pending_phone = {}
+user_profiles = {}
+user_quiz = {}
+admin_waiting_photo = {}
 
-# ==========================================================
-# FastAPI Init
-# ==========================================================
-app = FastAPI()
-app.include_router(webhook_router)
+# Google Sheets
+spreadsheet = connect_to_sheet()
+products_cache = []
 
+def refresh_products():
+    """Обновить кэш товаров из Google Sheets"""
+    global products_cache
+    products_cache = load_products(spreadsheet)
+    print(f"🔄 Кэш обновлён: {len(products_cache)} товаров")
 
-# ==========================================================
-# STARTUP
-# ==========================================================
-@app.on_event("startup")
-async def startup_event():
-    print("▶ STARTUP: Initializing services...")
+# Загрузить товары при старте
+refresh_products()
 
-    # 1 — Google Sheets Client
-    gs = GoogleSheetsClient()
+# === Структура каталога ===
 
-    # 2 — Load Settings
-    settings_service = SettingsService(gs)
-    settings_service.load()        # config.update_sheet_settings(...)
+def get_categories():
+    """Получить список уникальных категорий"""
+    categories = {}
+    for p in products_cache:
+        if not p["parent_id"]:
+            cat = p["category"]
+            if cat not in categories:
+                categories[cat] = {
+                    "id": p["id"],
+                    "name": p["name"],
+                    "description": p["description"],
+                    "file_id": p["file_id"]
+                }
+    return categories
 
-    # 3 — Load Catalog
-    catalog_service = CatalogService(gs)
-    catalog_service.load()
+def get_products_by_parent(parent_id):
+    """Получить варианты товара"""
+    return [p for p in products_cache if p["parent_id"] == str(parent_id)]
 
-    # 4 — Other services
-    cart_service = CartService(catalog_service)
-    orders_service = OrdersService(gs)
-    photo_manager = PhotoManager(gs, catalog_service)
+def get_product_by_id(product_id):
+    """Найти товар по ID"""
+    for p in products_cache:
+        if p["id"] == str(product_id):
+            return p
+    return None
 
-    # 5 — Inject services into handlers
-    start.catalog_service = catalog_service
-    catalog.catalog_service = catalog_service
-    product.catalog_service = catalog_service
+# === Webhook ===
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
 
-    cart.catalog_service = catalog_service
-    cart.cart_service = cart_service
+@app.route('/')
+def home():
+    return "✅ HION Bot is running with Google Sheets catalog."
 
-    order.catalog_service = catalog_service
-    order.cart_service = cart_service
-    order.orders_service = orders_service
+@app.route(WEBHOOK_PATH, methods=['POST'])
+def webhook():
+    try:
+        update_data = request.get_json(force=True)
+        update = types.Update(**update_data)
+        
+        async def process_update():
+            from aiogram import Bot
+            Bot.set_current(bot)
+            await dp.process_update(update)
+        
+        asyncio.run_coroutine_threadsafe(process_update(), loop)
+    except Exception as e:
+        print(f"❌ Webhook error: {e}")
+    return "OK", 200
 
-    panel.catalog_service = catalog_service
-    photo_upload.catalog_service = catalog_service
-    photo_upload.photo_manager = photo_manager
+@app.route('/remind')
+def remind_users():
+    try:
+        orders = get_orders(spreadsheet)
+        today = datetime.datetime.now().date()
+        
+        for order in orders:
+            if "@" not in order["Клиент"]:
+                continue
+            
+            date_str = order["Время"].split(" ")[0]
+            order_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+            
+            if (today - order_date).days == 30:
+                asyncio.run_coroutine_threadsafe(
+                    bot.send_message(order["Клиент"], "🌿 Как вам масло? Пора обновить курс 💛"),
+                    loop
+                )
+        
+        return "Reminders sent", 200
+    except Exception as e:
+        print(f"❌ Reminder error: {e}")
+        return str(e), 500
 
-    # 6 — Register all routers
-    await register_routers(dp)
+@app.route('/refresh')
+def refresh_catalog():
+    refresh_products()
+    return f"✅ Каталог обновлён: {len(products_cache)} товаров", 200
 
-    # 7 — Middlewares
-    setup_middlewares(dp)
+# === /start ===
+@dp.message_handler(commands=['start'])
+async def start(message: types.Message):
+    await message.answer(
+        "Добро пожаловать в HION 🌿\n"
+        "Натуральные масла холодного отжима — прямо от производителя.\n\n"
+        "👇 Выберите действие:",
+        reply_markup=main_menu
+    )
 
-    # 8 — Webhook
-    await setup_webhook(bot)
+# === Каталог ===
+@dp.message_handler(lambda m: m.text and "каталог" in m.text.lower())
+async def open_catalog(message: types.Message):
+    categories = get_categories()
+    
+    if not categories:
+        await message.answer("⚠️ Каталог пуст. Обновите товары в Google Sheets.")
+        return
+    
+    markup = InlineKeyboardMarkup()
+    for cat_name, cat_data in categories.items():
+        markup.add(InlineKeyboardButton(
+            f"🌿 {cat_data['name']}", 
+            callback_data=f"cat|{cat_data['id']}"
+        ))
+    
+    await message.answer("🌿 Выберите категорию:", reply_markup=markup)
 
-    print("✅ Bot started successfully")
+@dp.callback_query_handler(lambda c: c.data.startswith("cat|"))
+async def show_category(callback: types.CallbackQuery):
+    """Показать товар с фото и вариантами"""
+    cat_id = callback.data.split("|")[1]
+    product = get_product_by_id(cat_id)
+    
+    if not product:
+        await callback.answer("❌ Категория не найдена")
+        return
+    
+    variants = get_products_by_parent(cat_id)
+    text = f"*{product['name']}*\n\n{product['description']}"
+    
+    markup = InlineKeyboardMarkup()
+    for var in variants:
+        if var["variant_label"] and var["price"]:
+            markup.add(InlineKeyboardButton(
+                f"{var['variant_label']} — {var['price']}₽",
+                callback_data=f"add|{var['id']}|{var['variant_label']}|{var['price']}"
+            ))
+    
+    markup.add(InlineKeyboardButton("⬅️ Назад в каталог", callback_data="back_to_catalog"))
+    
+    if product["file_id"]:
+        try:
+            await callback.message.delete()
+            await bot.send_photo(
+                callback.from_user.id,
+                photo=product["file_id"],
+                caption=text,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+        except Exception as e:
+            print(f"⚠️ Ошибка отправки фото: {e}")
+            await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
 
+@dp.callback_query_handler(lambda c: c.data == "back_to_catalog")
+async def back_to_catalog(callback: types.CallbackQuery):
+    categories = get_categories()
+    
+    markup = InlineKeyboardMarkup()
+    for cat_name, cat_data in categories.items():
+        markup.add(InlineKeyboardButton(
+            f"🌿 {cat_data['name']}", 
+            callback_data=f"cat|{cat_data['id']}"
+        ))
+    
+    try:
+        await callback.message.delete()
+        await bot.send_message(
+            callback.from_user.id,
+            "🌿 Выберите категорию:",
+            reply_markup=markup
+        )
+    except:
+        await callback.message.edit_text("🌿 Выберите категорию:", reply_markup=markup)
 
-# ==========================================================
-# SHUTDOWN
-# ==========================================================
-@app.on_event("shutdown")
-async def shutdown_event():
-    print("⛔ Bot shutdown")
+# === Добавление в корзину ===
+@dp.callback_query_handler(lambda c: c.data.startswith("add|"))
+async def add_item(callback: types.CallbackQuery):
+    _, product_id, variant, price = callback.data.split("|")
+    user_id = callback.from_user.id
+    
+    product = get_product_by_id(product_id)
+    if not product:
+        await callback.answer("❌ Товар не найден")
+        return
+    
+    user_carts.setdefault(user_id, []).append({
+        "id": product_id,
+        "name": product["name"],
+        "variant": variant,
+        "price": int(price)
+    })
+    
+    await callback.answer("✅ Товар добавлен в корзину")
+    await callback.message.answer(
+        "🛒 Товар добавлен в корзину!\nОткройте её для оформления 💛",
+        reply_markup=main_menu
+    )
 
+# === Корзина ===
+async def send_cart(user_id, message_obj):
+    cart = user_carts.get(user_id, [])
+    
+    if not cart:
+        markup = InlineKeyboardMarkup().add(
+            InlineKeyboardButton("🌿 Вернуться в каталог", callback_data="back_to_catalog")
+        )
+        await message_obj.answer("🧺 Корзина пуста", reply_markup=markup)
+        return
+    
+    total = sum(item["price"] for item in cart)
+    text = "\n".join([
+        f"{i+1}. {item['name']} {item['variant']} — {item['price']}₽" 
+        for i, item in enumerate(cart)
+    ])
+    text += f"\n\n💰 Итого: {total}₽"
+    
+    markup = InlineKeyboardMarkup()
+    for i in range(len(cart)):
+        markup.add(InlineKeyboardButton(
+            f"❌ Удалить {i+1}", 
+            callback_data=f"remove|{i}"
+        ))
+    
+    markup.add(
+        InlineKeyboardButton("📦 Оформить заказ", callback_data="checkout"),
+        InlineKeyboardButton("🗑 Очистить корзину", callback_data="clear_cart")
+    )
+    
+    await message_obj.answer(text, reply_markup=markup)
 
-# ==========================================================
-# Render Entrypoint
-# ==========================================================
-# uvicorn main:app --host 0.0.0.0 --port $PORT
+@dp.message_handler(lambda m: "корзин" in m.text.lower())
+async def view_cart(message: types.Message):
+    await send_cart(message.from_user.id, message)
 
+@dp.callback_query_handler(lambda c: c.data.startswith("remove|"))
+async def remove_item(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    index = int(callback.data.split("|")[1])
+    
+    if user_id in user_carts and 0 <= index < len(user_carts[user_id]):
+        user_carts[user_id].pop(index)
+    
+    await callback.message.delete()
+    await send_cart(user_id, callback.message)
+
+@dp.callback_query_handler(lambda c: c.data == "clear_cart")
+async def clear_cart(callback: types.CallbackQuery):
+    user_carts[callback.from_user.id] = []
+    await callback.message.edit_text(
+        "🗑 Корзина очищена.",
+        reply_markup=InlineKeyboardMarkup().add(
+            InlineKeyboardButton("⬅️ Назад в каталог", callback_data="back_to_catalog")
+        )
+    )
+
+# === Оформление заказа ===
+@dp.callback_query_handler(lambda c: c.data == "checkout")
+async def checkout(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    cart = user_carts.get(user_id, [])
+    
+    if not cart:
+        markup = InlineKeyboardMarkup().add(
+            InlineKeyboardButton("🌿 Вернуться в каталог", callback_data="back_to_catalog")
+        )
+        await callback.message.edit_text("🧺 Корзина пуста.", reply_markup=markup)
+        return
+    
+    text = (
+        "🚚 Как удобнее получить заказ?\n\n"
+        "💛 Стоимость доставки и адрес самовывоза "
+        "согласовываются с менеджером после оформления.\n\n"
+        "Выберите удобный способ ниже 👇"
+    )
+    
+    kb = InlineKeyboardMarkup()
+    kb.add(
+        InlineKeyboardButton("🚗 Доставка", callback_data="delivery"),
+        InlineKeyboardButton("🏠 Самовывоз", callback_data="pickup")
+    )
+    
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+@dp.callback_query_handler(lambda c: c.data in ["delivery", "pickup"])
+async def choose_delivery(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    
+    if callback.data == "pickup":
+        await ask_phone(callback.message, "Самовывоз — ул. Гостиева, 8")
+    else:
+        pending_address[user_id] = True
+        await callback.message.edit_text("📍 Напишите адрес доставки (улица, дом, квартира) 💌:")
+
+async def ask_phone(message, address):
+    user_id = message.from_user.id
+    pending_phone[user_id] = address
+    
+    kb = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    kb.add(KeyboardButton("📞 Отправить номер", request_contact=True))
+    
+    await message.answer("📞 Укажите номер телефона для связи:", reply_markup=kb)
+
+@dp.message_handler(content_types=types.ContentType.CONTACT)
+async def handle_contact(message: types.Message):
+    user_id = message.from_user.id
+    phone = message.contact.phone_number
+    address = pending_phone.pop(user_id, "—")
+    
+    await finalize_order(message, address, phone)
+
+async def finalize_order(message, address, phone):
+    user_id = message.from_user.id
+    cart = user_carts.get(user_id, [])
+    
+    total = sum(item["price"] for item in cart)
+    items = "; ".join([f"{item['name']} {item['variant']} — {item['price']}₽" for item in cart])
+    
+    username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+    
+    add_order(spreadsheet, username, items, address, total, phone)
+    user_profiles[user_id] = {"address": address, "phone": phone}
+    
+    order_text = f"🛍 Новый заказ:\n{items}\n\n💰 {total}₽\n📍 {address}\n📞 {phone}\n👤 {username}"
+    
+    await bot.send_message(ADMIN_CHAT_ID, order_text)
+    if GROUP_CHAT_ID:
+        await bot.send_message(GROUP_CHAT_ID, order_text)
+    
+    user_carts[user_id] = []
+    
+    await message.answer(
+        "Спасибо! Ваш заказ зарегистрирован 💛\n"
+        "Менеджер свяжется с вами в течение дня для уточнения деталей ✨",
+        reply_markup=main_menu
+    )
+
+# === ПОДБОР МАСЛА ===
+
+QUIZ_QUESTIONS = {
+    1: ("Если бы вы могли улучшить одно состояние прямо сейчас — что бы это было?",
+        ["💪 Энергия и бодрость", "🧘 Спокойствие и устойчивость", "🫀 Сердце и сосуды",
+         "💆 Кожа и волосы", "🧠 Концентрация и память", "🌸 Гормональный баланс"]),
+    2: ("Как вы чувствуете себя в последние недели?",
+        ["😊 Всё стабильно", "😴 Часто устаю", "🥴 Есть тревожность или стресс", 
+         "🤧 Бывают простуды", "🤕 Есть проблемы с пищеварением"]),
+    3: ("Какой у вас ритм жизни?",
+        ["🏃 Очень активный", "💻 Сидячая работа", "😌 Спокойный ритм", "🔥 Много стресса"]),
+    4: ("Какие продукты чаще всего на вашем столе?",
+        ["🍗 Мясо, рыба, яйца", "🥦 Овощи, крупы, бобовые", "🍕 Фастфуд или сладкое", 
+         "🌿 В основном растительное питание"]),
+    5: ("Какое масло вы бы хотели — по ощущениям?",
+        ["🌰 С насыщенным ореховым вкусом", "💧 Нейтральное, лёгкое", 
+         "🌶 Пряное и характерное", "✨ Универсальное — и внутрь, и наружно"]),
+    6: ("Используете ли вы масла для ухода за кожей или волосами?",
+        ["💆 Да, часто", "💅 Иногда", "🚫 Нет, только внутрь"]),
+    7: ("Какую цель хотите достичь быстрее всего?",
+        ["🌿 Улучшить самочувствие", "💆 Улучшить внешний вид", 
+         "🔥 Повысить энергию", "🧘 Снизить стресс"])
+}
+
+OIL_RECOMMENDATIONS = {
+    "flax": "Масло льняное",
+    "hemp": "Масло конопляное",
+    "pumpkin": "Масло тыквенное",
+    "blackseed": "Масло черного тмина",
+    "sunflower": "Масло подсолнечное",
+    "walnut": "Масло грецкого ореха",
+    "coconut": "Масло кокосовое"
+}
+
+async def start_quiz(message: types.Message):
+    user_quiz[message.from_user.id] = {"step": 1, "answers": {}}
+    await send_quiz_question(message, 1)
+
+async def send_quiz_question(message, step):
+    q_text, q_options = QUIZ_QUESTIONS[step]
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    
+    for opt in q_options:
+        kb.add(opt)
+    
+    nav = []
+    if step > 1:
+        nav.append("🔙 Назад")
+    nav.append("❌ Выйти")
+    kb.add(*nav)
+    
+    await message.answer(q_text, reply_markup=kb)
+
+async def handle_quiz_answer(message: types.Message):
+    uid = message.from_user.id
+    data = user_quiz.get(uid, {"step": 1, "answers": {}})
+    step = data["step"]
+    
+    data["answers"][f"q{step}"] = message.text
+    
+    next_step = step + 1
+    if next_step in QUIZ_QUESTIONS:
+        user_quiz[uid]["step"] = next_step
+        await send_quiz_question(message, next_step)
+    else:
+        await recommend_oil(message, data["answers"])
+        user_quiz.pop(uid, None)
+
+async def recommend_oil(message: types.Message, answers):
+    """Рекомендация масла + связь с каталогом"""
+    joined = " ".join(answers.values()).lower()
+    
+    score = {k: 0 for k in OIL_RECOMMENDATIONS}
+    
+    if "устал" in joined or "энерг" in joined: score["coconut"] += 3
+    if "стресс" in joined or "тревож" in joined: score["hemp"] += 3
+    if "кожа" in joined or "волос" in joined: score["sunflower"] += 3
+    if "память" in joined or "мозг" in joined: score["walnut"] += 3
+    if "сердце" in joined or "сосуд" in joined: score["flax"] += 3
+    if "иммун" in joined or "простуд" in joined: score["blackseed"] += 3
+    if "печен" in joined or "жкт" in joined: score["pumpkin"] += 3
+    if "гормон" in joined: 
+        score["hemp"] += 2
+        score["pumpkin"] += 2
+    
+    best = max(score, key=score.get)
+    recommended_name = OIL_RECOMMENDATIONS[best]
+    
+    # Найти товар в каталоге
+    recommended_product = None
+    for p in products_cache:
+        if recommended_name.lower() in p["name"].lower() and not p["parent_id"]:
+            recommended_product = p
+            break
+    
+    if not recommended_product:
+        await message.answer(
+            "✨ К сожалению, рекомендованное масло сейчас недоступно.\n"
+            "Попробуйте открыть каталог 🌿",
+            reply_markup=main_menu
+        )
+        return
+    
+    oil_emoji = {
+        "flax": "💧",
+        "hemp": "🌿",
+        "pumpkin": "🎃",
+        "blackseed": "🌑",
+        "sunflower": "🌻",
+        "walnut": "🌰",
+        "coconut": "🥥"
+    }.get(best, "🌿")
+    
+    text = (
+        f"✨ Мы нашли масло, которое подходит именно вам.\n\n"
+        f"{oil_emoji} *{recommended_product['name']}*\n\n"
+        f"{recommended_product['description']}\n\n"
+        f"🌿 Рекомендуем начать с 1 ч.л. утром курсом 1–2 месяца.\n"
+        f"💛 Вы можете добавить его в корзину или открыть каталог."
+    )
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(
+        "🛒 Посмотреть варианты",
+        callback_data=f"cat|{recommended_product['id']}"
+    ))
+    markup.add(InlineKeyboardButton("🌿 Весь каталог", callback_data="back_to_catalog"))
+    
+    if recommended_product["file_id"]:
+        try:
+            await bot.send_photo(
+                message.from_user.id,
+                photo=recommended_product["file_id"],
+                caption=text,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+        except:
+            await message.answer(text, parse_mode="Markdown", reply_markup=markup)
+    else:
+        await message.answer(text, parse_mode="Markdown", reply_markup=markup)
+
+# === АДМИН: Обновление фото ===
+@dp.message_handler(commands=['updatephoto'], user_id=ADMIN_CHAT_ID)
+async def admin_update_photo(message: types.Message):
+    await message.answer(
+        "📸 Отправьте фото товара.\n"
+        "После этого я попрошу указать ID товара из таблицы."
+    )
+
+@dp.message_handler(content_types=types.ContentType.PHOTO)
+async def handle_photo(message: types.Message):
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+    
+    file_id = message.photo[-1].file_id
+    admin_waiting_photo[message.from_user.id] = file_id
+    
+    await message.answer(
+        f"✅ Фото получено!\n"
+        f"File ID: `{file_id}`\n\n"
+        f"Теперь отправьте ID товара из Google Sheets (например, `1` или `4`):",
+        parse_mode="Markdown"
+    )
+
+@dp.message_handler(lambda m: m.from_user.id in admin_waiting_photo)
+async def handle_product_id(message: types.Message):
+    product_id = message.text.strip()
+    file_id = admin_waiting_photo.pop(message.from_user.id, None)
+    
+    if not file_id:
+        await message.answer("❌ Фото не найдено. Попробуйте заново: /updatephoto")
+        return
+    
+    success = update_product_photo(spreadsheet, product_id, file_id)
+    
+    if success:
+        refresh_products()
+        await message.answer(
+            f"✅ Фото для товара ID={product_id} успешно обновлено!\n"
+            f"Кэш обновлён автоматически.",
+            reply_markup=main_menu
+        )
+    else:
+        await message.answer(
+            f"⚠️ Не удалось обновить фото для ID={product_id}.\n"
+            f"Проверьте, что такой ID существует в таблице.",
+            reply_markup=main_menu
+        )
+
+# === Обработка текстовых сообщений ===
+@dp.message_handler()
+async def handle_message(message: types.Message):
+    user_id = message.from_user.id
+    text = (message.text or "").lower()
+    
+    if "подбор" in text:
+        await start_quiz(message)
+        return
+    
+    if text.startswith("❌") or "выйти" in text:
+        user_quiz.pop(user_id, None)
+        await message.answer("Вы вышли из подбора масел 🌿", reply_markup=main_menu)
+        return
+    
+    if text.startswith("🔙") or "назад" in text:
+        if user_id in user_quiz:
+            step = user_quiz[user_id]["step"]
+            if step > 1:
+                user_quiz[user_id]["step"] -= 1
+                await send_quiz_question(message, user_quiz[user_id]["step"])
+            else:
+                await message.answer("Это первый вопрос 🌿", reply_markup=main_menu)
+        return
+    
+    if user_id in user_quiz:
+        await handle_quiz_answer(message)
+        return
+    
+    if user_id in pending_address:
+        address = message.text.strip()
+        pending_address.pop(user_id, None)
+        await ask_phone(message, address)
+        return
+
+# === Webhook setup ===
+async def on_startup():
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(WEBHOOK_URL)
+    print(f"✅ Webhook установлен: {WEBHOOK_URL}")
+
+if __name__ == "__main__":
+    def run_loop():
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+    
+    threading.Thread(target=run_loop, daemon=True).start()
+    asyncio.run_coroutine_threadsafe(on_startup(), loop)
+    
+    print("🚀 Bot is running with Google Sheets catalog")
+    print(f"📦 Loaded {len(products_cache)} products")
+    
+    app.run(host="0.0.0.0", port=8080)
