@@ -2,7 +2,7 @@ import os
 import asyncio
 import datetime
 from flask import Flask, request
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import Command
 from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -18,9 +18,11 @@ from config import BOT_TOKEN, ADMIN_CHAT_ID, GROUP_CHAT_ID
 # --- Инициализация ---
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+router = Router()
+dp.include_router(router)
 app = Flask(__name__)
 
-BOT_URL = os.getenv("BOT_URL", "https://hion-shop-bot.onrender.com")
+BOT_URL = os.getenv("BOT_URL", "https://universal-bot-eb3x.onrender.com")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
 WEBHOOK_URL = f"{BOT_URL}{WEBHOOK_PATH}"
 
@@ -44,10 +46,12 @@ admin_waiting_photo = {}
 spreadsheet = connect_to_sheet()
 products_cache = []
 
+
 def refresh_products():
     global products_cache
     products_cache = load_products(spreadsheet)
     print(f"🔄 Кэш обновлён: {len(products_cache)} товаров")
+
 
 refresh_products()
 
@@ -66,8 +70,10 @@ def get_categories():
                 }
     return categories
 
+
 def get_products_by_parent(parent_id):
     return [p for p in products_cache if p["parent_id"] == str(parent_id)]
+
 
 def get_product_by_id(product_id):
     for p in products_cache:
@@ -75,13 +81,16 @@ def get_product_by_id(product_id):
             return p
     return None
 
-# --- Flask routes (только sync def!) ---
 
-@app.route('/')
+# --- Flask routes ---
+
+
+@app.route("/")
 def home():
     return "✅ HION Bot is running with Google Sheets catalog."
 
-@app.route(WEBHOOK_PATH, methods=['POST'])
+
+@app.route(WEBHOOK_PATH, methods=["POST"])
 def webhook():
     try:
         update_data = request.get_json(force=True)
@@ -91,7 +100,8 @@ def webhook():
         print(f"❌ Webhook error: {e}")
     return "OK", 200
 
-@app.route('/remind')
+
+@app.route("/remind")
 def remind_users():
     try:
         orders = get_orders(spreadsheet)
@@ -99,7 +109,7 @@ def remind_users():
         for order in orders:
             if "@" not in order["Клиент"]:
                 continue
-            date_str = order["Время"].split(" ")[0]
+            date_str = order["Время"].split(" ")
             order_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
             if (today - order_date).days == 30:
                 asyncio.run(bot.send_message(order["Клиент"], "🌿 Как вам масло? Пора обновить курс 💛"))
@@ -108,13 +118,17 @@ def remind_users():
         print(f"❌ Reminder error: {e}")
         return str(e), 500
 
-@app.route('/refresh')
+
+@app.route("/refresh")
 def refresh_catalog():
     refresh_products()
     return f"✅ Каталог обновлён: {len(products_cache)} товаров", 200
 
-# --- Aiogram Handlers ---
-@dp.message(Command("start"))
+
+# --- Aiogram Handlers (router) ---
+
+
+@router.message(Command("start"))
 async def start(message: Message):
     await message.answer(
         "Добро пожаловать в HION 🌿\n"
@@ -123,7 +137,8 @@ async def start(message: Message):
         reply_markup=get_main_menu()
     )
 
-@dp.message(F.text.lower().contains("каталог"))
+
+@router.message(F.text.lower().contains("каталог"))
 async def open_catalog(message: Message):
     categories = get_categories()
     if not categories:
@@ -131,11 +146,12 @@ async def open_catalog(message: Message):
         return
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🌿 {cat_data['name']}", callback_data=f"cat|{cat_data['id']}")]
-        for cat_name, cat_data in categories.items()
+        for _, cat_data in categories.items()
     ])
     await message.answer("🌿 Выберите категорию:", reply_markup=markup)
 
-@dp.callback_query(F.data.startswith("cat|"))
+
+@router.callback_query(F.data.startswith("cat|"))
 async def show_category(callback: CallbackQuery):
     cat_id = callback.data.split("|")[1]
     product = get_product_by_id(cat_id)
@@ -169,20 +185,22 @@ async def show_category(callback: CallbackQuery):
     else:
         await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=markup)
 
-@dp.callback_query(F.data == "back_to_catalog")
+
+@router.callback_query(F.data == "back_to_catalog")
 async def back_to_catalog(callback: CallbackQuery):
     categories = get_categories()
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🌿 {cat_data['name']}", callback_data=f"cat|{cat_data['id']}")]
-        for cat_name, cat_data in categories.items()
+        for _, cat_data in categories.items()
     ])
     try:
         await callback.message.delete()
         await bot.send_message(callback.from_user.id, "🌿 Выберите категорию:", reply_markup=markup)
-    except:
+    except Exception:
         await callback.message.edit_text("🌿 Выберите категорию:", reply_markup=markup)
 
-@dp.callback_query(F.data.startswith("add|"))
+
+@router.callback_query(F.data.startswith("add|"))
 async def add_item(callback: CallbackQuery):
     _, product_id, variant, price = callback.data.split("|")
     user_id = callback.from_user.id
@@ -202,6 +220,7 @@ async def add_item(callback: CallbackQuery):
         reply_markup=get_main_menu()
     )
 
+
 async def send_cart(user_id, message_obj):
     cart = user_carts.get(user_id, [])
     if not cart:
@@ -211,7 +230,9 @@ async def send_cart(user_id, message_obj):
         await message_obj.answer("🧺 Корзина пуста", reply_markup=markup)
         return
     total = sum(item["price"] for item in cart)
-    text = "\n".join([f"{i+1}. {item['name']} {item['variant']} — {item['price']}₽" for i, item in enumerate(cart)])
+    text = "\n".join(
+        [f"{i+1}. {item['name']} {item['variant']} — {item['price']}₽" for i, item in enumerate(cart)]
+    )
     text += f"\n\n💰 Итого: {total}₽"
     buttons = [[InlineKeyboardButton(text=f"❌ Удалить {i+1}", callback_data=f"remove|{i}")] for i in range(len(cart))]
     buttons.append([InlineKeyboardButton(text="📦 Оформить заказ", callback_data="checkout")])
@@ -219,11 +240,13 @@ async def send_cart(user_id, message_obj):
     markup = InlineKeyboardMarkup(inline_keyboard=buttons)
     await message_obj.answer(text, reply_markup=markup)
 
-@dp.message(F.text.lower().contains("корзин"))
+
+@router.message(F.text.lower().contains("корзин"))
 async def view_cart(message: Message):
     await send_cart(message.from_user.id, message)
 
-@dp.callback_query(F.data.startswith("remove|"))
+
+@router.callback_query(F.data.startswith("remove|"))
 async def remove_item(callback: CallbackQuery):
     user_id = callback.from_user.id
     index = int(callback.data.split("|")[1])
@@ -232,7 +255,8 @@ async def remove_item(callback: CallbackQuery):
     await callback.message.delete()
     await send_cart(user_id, callback.message)
 
-@dp.callback_query(F.data == "clear_cart")
+
+@router.callback_query(F.data == "clear_cart")
 async def clear_cart(callback: CallbackQuery):
     user_carts[callback.from_user.id] = []
     markup = InlineKeyboardMarkup(inline_keyboard=[
@@ -240,7 +264,8 @@ async def clear_cart(callback: CallbackQuery):
     ])
     await callback.message.edit_text("🗑 Корзина очищена.", reply_markup=markup)
 
-@dp.callback_query(F.data == "checkout")
+
+@router.callback_query(F.data == "checkout")
 async def checkout(callback: CallbackQuery):
     user_id = callback.from_user.id
     cart = user_carts.get(user_id, [])
@@ -262,7 +287,8 @@ async def checkout(callback: CallbackQuery):
     ])
     await callback.message.edit_text(text, reply_markup=markup)
 
-@dp.callback_query(F.data.in_(["delivery", "pickup"]))
+
+@router.callback_query(F.data.in_(["delivery", "pickup"]))
 async def choose_delivery(callback: CallbackQuery):
     user_id = callback.from_user.id
     if callback.data == "pickup":
@@ -270,6 +296,7 @@ async def choose_delivery(callback: CallbackQuery):
     else:
         pending_address[user_id] = True
         await callback.message.edit_text("📍 Напишите адрес доставки (улица, дом, квартира) 💌:")
+
 
 async def ask_phone(message, address):
     user_id = message.from_user.id
@@ -281,18 +308,22 @@ async def ask_phone(message, address):
     )
     await message.answer("📞 Укажите номер телефона для связи:", reply_markup=kb)
 
-@dp.message(F.contact)
+
+@router.message(F.contact)
 async def handle_contact(message: Message):
     user_id = message.from_user.id
     phone = message.contact.phone_number
     address = pending_phone.pop(user_id, "—")
     await finalize_order(message, address, phone)
 
+
 async def finalize_order(message, address, phone):
     user_id = message.from_user.id
     cart = user_carts.get(user_id, [])
     total = sum(item["price"] for item in cart)
-    items = "; ".join([f"{item['name']} {item['variant']} — {item['price']}₽" for item in cart])
+    items = "; ".join(
+        [f"{item['name']} {item['variant']} — {item['price']}₽" for item in cart]
+    )
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
     add_order(spreadsheet, username, items, address, total, phone)
     user_profiles[user_id] = {"address": address, "phone": phone}
@@ -308,6 +339,7 @@ async def finalize_order(message, address, phone):
     )
 
 # --- Подбор масла ---
+
 QUIZ_QUESTIONS = {
     1: ("Если бы вы могли улучшить одно состояние прямо сейчас — что бы это было?",
         ["💪 Энергия и бодрость", "🧘 Спокойствие и устойчивость", "🫀 Сердце и сосуды",
@@ -340,9 +372,11 @@ OIL_RECOMMENDATIONS = {
     "coconut": "Масло кокосовое"
 }
 
+
 async def start_quiz(message: Message):
     user_quiz[message.from_user.id] = {"step": 1, "answers": {}}
     await send_quiz_question(message, 1)
+
 
 async def send_quiz_question(message, step):
     q_text, q_options = QUIZ_QUESTIONS[step]
@@ -354,6 +388,7 @@ async def send_quiz_question(message, step):
     buttons.append(nav)
     kb = ReplyKeyboardMarkup(resize_keyboard=True, keyboard=buttons)
     await message.answer(q_text, reply_markup=kb)
+
 
 async def handle_quiz_answer(message: Message):
     uid = message.from_user.id
@@ -368,16 +403,24 @@ async def handle_quiz_answer(message: Message):
         await recommend_oil(message, data["answers"])
         user_quiz.pop(uid, None)
 
+
 async def recommend_oil(message: Message, answers):
     joined = " ".join(answers.values()).lower()
     score = {k: 0 for k in OIL_RECOMMENDATIONS}
-    if "устал" in joined or "энерг" in joined: score["coconut"] += 3
-    if "стресс" in joined or "тревож" in joined: score["hemp"] += 3
-    if "кожа" in joined or "волос" in joined: score["sunflower"] += 3
-    if "память" in joined or "мозг" in joined: score["walnut"] += 3
-    if "сердце" in joined or "сосуд" in joined: score["flax"] += 3
-    if "иммун" in joined or "простуд" in joined: score["blackseed"] += 3
-    if "печен" in joined or "жкт" in joined: score["pumpkin"] += 3
+    if "устал" in joined or "энерг" in joined:
+        score["coconut"] += 3
+    if "стресс" in joined or "тревож" in joined:
+        score["hemp"] += 3
+    if "кожа" in joined or "волос" in joined:
+        score["sunflower"] += 3
+    if "память" in joined or "мозг" in joined:
+        score["walnut"] += 3
+    if "сердце" in joined or "сосуд" in joined:
+        score["flax"] += 3
+    if "иммун" in joined or "простуд" in joined:
+        score["blackseed"] += 3
+    if "печен" in joined or "жкт" in joined:
+        score["pumpkin"] += 3
     if "гормон" in joined:
         score["hemp"] += 2
         score["pumpkin"] += 2
@@ -396,9 +439,13 @@ async def recommend_oil(message: Message, answers):
         )
         return
     oil_emoji = {
-        "flax": "💧", "hemp": "🌿", "pumpkin": "🎃",
-        "blackseed": "🌑", "sunflower": "🌻",
-        "walnut": "🌰", "coconut": "🥥"
+        "flax": "💧",
+        "hemp": "🌿",
+        "pumpkin": "🎃",
+        "blackseed": "🌑",
+        "sunflower": "🌻",
+        "walnut": "🌰",
+        "coconut": "🥥"
     }.get(best, "🌿")
     text = (
         f"✨ Мы нашли масло, которое подходит именно вам.\n\n"
@@ -420,19 +467,20 @@ async def recommend_oil(message: Message, answers):
                 parse_mode="Markdown",
                 reply_markup=markup
             )
-        except:
+        except Exception:
             await message.answer(text, parse_mode="Markdown", reply_markup=markup)
     else:
         await message.answer(text, parse_mode="Markdown", reply_markup=markup)
 
-# --- АДМИН /updatephoto ---
-@dp.message(Command("updatephoto"))
+
+@router.message(Command("updatephoto"))
 async def admin_update_photo(message: Message):
     if message.from_user.id != ADMIN_CHAT_ID:
         return
     await message.answer("📸 Отправьте фото товара.\nПосле этого я попрошу указать ID товара из таблицы.")
 
-@dp.message(F.photo)
+
+@router.message(F.photo)
 async def handle_photo(message: Message):
     if message.from_user.id != ADMIN_CHAT_ID:
         return
@@ -444,10 +492,12 @@ async def handle_photo(message: Message):
         parse_mode="Markdown"
     )
 
-@dp.message()
+
+@router.message()
 async def handle_message(message: Message):
     user_id = message.from_user.id
     text = (message.text or "").lower()
+
     if user_id in admin_waiting_photo:
         product_id = message.text.strip()
         file_id = admin_waiting_photo.pop(user_id, None)
@@ -499,21 +549,26 @@ async def handle_message(message: Message):
         await ask_phone(message, address)
         return
 
-# --- Запуск aiogram и Flask ---
+
 async def on_startup():
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_URL)
     print(f"✅ Webhook установлен: {WEBHOOK_URL}")
 
+
 if __name__ == "__main__":
     import threading
+
     async def run_bot():
         await on_startup()
         print("🚀 Bot is running with Google Sheets catalog")
         print(f"📦 Loaded {len(products_cache)} products")
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
     def run_async_loop():
         loop.run_until_complete(run_bot())
+
     threading.Thread(target=run_async_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
