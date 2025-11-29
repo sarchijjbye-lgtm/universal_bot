@@ -3,5 +3,5 @@ services:
     name: hion-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python main-aiogram3.py
+    startCommand: python main.py
     plan: free
