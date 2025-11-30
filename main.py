@@ -5,22 +5,22 @@ from flask import Flask, request
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import Command
 from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, Message, CallbackQuery
+InlineKeyboardMarkup, InlineKeyboardButton,
+ReplyKeyboardMarkup, KeyboardButton, Message, CallbackQuery
 )
 
 from google_sheets import (
-    connect_to_sheet, add_order, get_orders,
-    load_products, update_product_photo
+connect_to_sheet, add_order, get_orders,
+load_products, update_product_photo
 )
 from config import BOT_TOKEN, ADMIN_CHAT_ID, GROUP_CHAT_ID
 
-# --- Инициализация ---
+--- Инициализация ---
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
 router = Router()
+dp = Dispatcher()
 dp.include_router(router)
-app = Flask(__name__)
+app = Flask(name)
 
 BOT_URL = os.getenv("BOT_URL", "https://universal-bot-eb3x.onrender.com")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook")
