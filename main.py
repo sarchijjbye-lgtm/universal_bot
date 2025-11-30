@@ -81,7 +81,6 @@ def get_product_by_id(product_id):
             return p
     return None
 
-
 # --- Flask routes ---
 
 
@@ -109,7 +108,7 @@ def remind_users():
         for order in orders:
             if "@" not in order["Клиент"]:
                 continue
-            date_str = order["Время"].split(" ")
+            date_str = order["Время"].split(" ")[0]
             order_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
             if (today - order_date).days == 30:
                 asyncio.run(bot.send_message(order["Клиент"], "🌿 Как вам масло? Пора обновить курс 💛"))
@@ -123,7 +122,6 @@ def remind_users():
 def refresh_catalog():
     refresh_products()
     return f"✅ Каталог обновлён: {len(products_cache)} товаров", 200
-
 
 # --- Aiogram Handlers (router) ---
 
@@ -340,6 +338,7 @@ async def finalize_order(message, address, phone):
 
 # --- Подбор масла ---
 
+
 QUIZ_QUESTIONS = {
     1: ("Если бы вы могли улучшить одно состояние прямо сейчас — что бы это было?",
         ["💪 Энергия и бодрость", "🧘 Спокойствие и устойчивость", "🫀 Сердце и сосуды",
@@ -361,6 +360,7 @@ QUIZ_QUESTIONS = {
         ["🌿 Улучшить самочувствие", "💆 Улучшить внешний вид",
          "🔥 Повысить энергию", "🧘 Снизить стресс"])
 }
+
 
 OIL_RECOMMENDATIONS = {
     "flax": "Масло льняное",
